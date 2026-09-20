@@ -10,11 +10,11 @@
 
 .PARAMETER Pack
     Nom du pack à télécharger :
-    - IMAGE_BASIC      : DiT rapide Chroma Flash + VAE + T5-XXL (~7.94 Go)
-    - IMAGE_INPAINT    : Inpainting SD 1.5 FP16 + VAE (~2.30 Go)
-    - IMAGE_MULTI_SD15 : Inpaint + Clip Vision ViT-H + IP-Adapter (+ Face) (~4.84 Go)
-    - IMAGE_AUTO_FACE  : Multi-SD15 + Détecteur YOLOv8n Face (~4.85 Go)
-    - IMAGE_FULL / ALL : Ensemble des 19 modèles de production (~70.8 Go)
+    - IMAGE_BASIC      : DiT rapide Chroma Flash + VAE + T5-XXL (~7.94 Go / 8.52 GB)
+    - IMAGE_INPAINT    : Inpainting SD 1.5 FP16 + VAE (~2.30 Go / 2.47 GB)
+    - IMAGE_MULTI_SD15 : Inpaint + Clip Vision ViT-H + IP-Adapter (+ Face) (~4.84 Go / 5.20 GB)
+    - IMAGE_AUTO_FACE  : Multi-SD15 + Détecteur YOLOv8n Face (~4.85 Go / 5.20 GB)
+    - IMAGE_FULL / ALL : Ensemble des 19 modèles de production (60.85 GB décimaux / 56.67 GiB)
 
 .PARAMETER Model
     Identifiant ou nom de fichier d'un modèle spécifique (ex: clip_vision_vit_h, face_yolov8n).
@@ -194,7 +194,8 @@ foreach ($relPath in $FilesToDownload) {
         continue
     }
 
-    $finalPath = Join-Path $Destination $modelDef.relative_path
+    $rel = if ($modelDef.destination) { $modelDef.destination } else { $modelDef.relative_path }
+    $finalPath = Join-Path $Destination $rel
     $needsDownload = $true
 
     if ((Test-Path $finalPath) -and (-not $Force)) {
@@ -206,10 +207,10 @@ foreach ($relPath in $FilesToDownload) {
                 Write-Host ("  [VALID]  {0} : Déjà présent et intègre." -f $modelDef.filename) -ForegroundColor Green
                 $needsDownload = $false
             } else {
-                Write-Warning ("  [CORRUPT] {0} : Taille correspondante mais empreinte incorrecte (Attendu: {1}, Obtenu: {2}). Re-téléchargement nécessaire." -f $modelDef.filename, $modelDef.sha256, $existingHash)
+                Write-Warning ("  [CORRUPT - HASH INVALIDE] {0} : Taille correspondante mais empreinte incorrecte (Attendu: {1}, Obtenu: {2}). Re-téléchargement nécessaire." -f $modelDef.filename, $modelDef.sha256, $existingHash)
             }
         } else {
-            Write-Host ("  [TAILLE INVALIDE] {0} : {1} octets au lieu de {2}." -f $modelDef.filename, $fInfo.Length, $modelDef.size_bytes) -ForegroundColor Yellow
+            Write-Warning ("  [CORRUPT - TAILLE INVALIDE] {0} : {1} octets au lieu de {2}. Re-téléchargement nécessaire." -f $modelDef.filename, $fInfo.Length, $modelDef.size_bytes)
         }
     }
 
@@ -230,7 +231,8 @@ Write-Host ("Modèles à télécharger : {0} ({1})" -f $pendingModels.Count, (Fo
 if ($DryRun) {
     Write-Host "`n--- MODE SIMULATION (-DryRun) : AUCUN FICHIER TÉLÉCHARGÉ ---" -ForegroundColor Cyan
     foreach ($m in $pendingModels) {
-        $destPath = Join-Path $Destination $m.relative_path
+        $rel = if ($m.destination) { $m.destination } else { $m.relative_path }
+        $destPath = Join-Path $Destination $rel
         Write-Host ("  [DRY-RUN] Modèle : {0}" -f $m.filename) -ForegroundColor White
         Write-Host ("            Taille : {0}" -f (Format-Bytes $m.size_bytes)) -ForegroundColor Gray
         Write-Host ("            Cible  : {0}" -f $destPath) -ForegroundColor Gray
@@ -245,7 +247,8 @@ if ($DryRun) {
 $currentIndex = 0
 foreach ($m in $pendingModels) {
     $currentIndex++
-    $finalPath = Join-Path $Destination $m.relative_path
+    $rel = if ($m.destination) { $m.destination } else { $m.relative_path }
+    $finalPath = Join-Path $Destination $rel
     $parentDir = Split-Path -Parent $finalPath
     if (-not (Test-Path $parentDir)) {
         New-Item -ItemType Directory -Path $parentDir -Force | Out-Null

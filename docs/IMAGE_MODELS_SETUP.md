@@ -33,7 +33,7 @@ Le backend d'imagerie de Jarvisol (`sd_server.py` et son binaire `sd_server.exe`
 
 ## 3. Packs Logiques de Téléchargement
 
-Pour éviter de télécharger l'intégralité des ~70 Go de modèles lorsque seul un cas d'usage précis est ciblé, Jarvisol organise les modèles en **5 packs logiques** :
+Pour éviter de télécharger l'intégralité des 60.85 GB (56.67 GiB) de modèles lorsque seul un cas d'usage précis est ciblé, Jarvisol organise les modèles en **5 packs logiques** :
 
 ### 3.1 Pack `IMAGE_BASIC` (~7.94 Go / 3 fichiers)
 Idéal pour démarrer rapidement la génération de texte vers image ultra-rapide (inférence en 8 passes).
@@ -58,8 +58,8 @@ Ajoute la détection automatique de visages par réseau neuronal ultra-léger YO
 - Contient l'intégralité du pack `IMAGE_MULTI_SD15` (4.84 Go)
 - `models/image_conditioning/detectors/face_yolov8n.safetensors` (5.75 Mo)
 
-### 3.5 Pack `IMAGE_FULL` (~70.79 Go / 19 fichiers)
-Suite complète de tous les 19 modèles de production certifiés (SDXL, Pony, FLUX.1, SD 3.5, Chroma, Inpainting haute précision FP32 et GGUF, VAEs et encodeurs de texte).
+### 3.5 Pack `IMAGE_FULL` (60 847 149 564 octets — 60.85 GB décimaux / 56.67 GiB / 19 fichiers)
+Suite complète de tous les 19 modèles de production certifiés (SDXL, Pony, FLUX.1, SD 3.5, Chroma, Inpainting haute précision FP32 et GGUF, VAEs et encodeurs de texte). Somme canonique : 60 847 149 564 octets (60.85 GB décimaux, 56.67 GiB).
 
 ---
 
