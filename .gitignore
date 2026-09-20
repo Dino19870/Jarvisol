@@ -77,11 +77,17 @@ chatterbox_weights/
 # Exception: keep lightweight test fixtures under 1MB
 !CrispASR/models/for-tests-*.bin
 
-# ── Precompiled Runtime Downloads ──
+# ── Precompiled Runtime Downloads & PyInstaller Dist ──
 runtime/node/
 runtime/web_media/*.exe
+**/runtime/web_media/*.exe
 !runtime/web_media/licenses/
 !runtime/web_media/SHA2-256SUMS
+!**/runtime/web_media/licenses/
+!**/runtime/web_media/SHA2-256SUMS
+dist/
+**/dist/
+jarvisol_tray.spec
 
 # ── Secrets & Private Configurations ──
 *.env

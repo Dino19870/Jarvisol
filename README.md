@@ -143,23 +143,36 @@ Ce script résout l'ensemble des paquets Dart/Flutter pour l'application princip
 
 ## 8. Compilation de l'application Windows
 
-Pour compiler l'intégralité du projet en mode Release :
+### A. Build Complet Portable (Recommandé)
+
+Pour compiler l'intégralité du projet en mode Release complet (incluant les moteurs C++, l'application Flutter, les serveurs auxiliaires Python empaquetés et le runtime Web Media) :
 
 ```powershell
-pwsh scripts/build_windows.ps1 release
+pwsh scripts/build_windows.ps1 release -FullRelease
 ```
 
 Ce script automatise toutes les étapes nécessaires :
 1. Configure et compile le moteur C++ **CrispASR** (`whisper.dll`, `crispasr.dll`).
 2. Configure et compile le moteur C++ **CrispEmbed** (`crispembed.dll`).
 3. Configure et compile la suite de codecs **glint** (`glint.dll`).
-4. Compile l'application Flutter Windows (`crisper_weaver.exe`).
-5. Copie l'ensemble des bibliothèques dynamiques natives aux côtés de l'exécutable dans :
-   `CrisperWeaver\build\windows\x64\runner\Release\`
+4. Compile l'application Flutter Windows (`crisper_weaver.exe` / `jarvisol.exe`).
+5. Copie l'ensemble des bibliothèques dynamiques natives aux côtés de l'exécutable.
+6. Compile et package les serveurs auxiliaires Python avec PyInstaller (`memory_server.exe`, `sd_server.exe`, `jarvisol_tray.exe`) et intègre le runtime Web Media portable (`yt-dlp`, `deno`, `ffmpeg`, `ffprobe`).
+
+L'ensemble de la Release portable autonome est produit dans :
+`CrisperWeaver\build\windows\x64\runner\Release\`
 
 Vous pouvez démarrer l'application immédiatement :
 ```powershell
-& "CrisperWeaver\build\windows\x64\runner\Release\crisper_weaver.exe"
+& "CrisperWeaver\build\windows\x64\runner\Release\jarvisol.exe"
+```
+
+### B. Build Minimal Développement (C++ & Flutter uniquement)
+
+Si vous ne souhaitez pas recompiler les serveurs Python (qui peuvent être lancés directement via `python script.py`) :
+
+```powershell
+pwsh scripts/build_windows.ps1 release
 ```
 
 ---
