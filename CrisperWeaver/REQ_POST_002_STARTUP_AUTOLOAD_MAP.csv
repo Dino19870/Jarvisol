@@ -1,0 +1,9 @@
+Service;Preference_Key;Valeur_Actuelle;Charge_Au_Startup;Risque_RAM_VRAM;Valeur_Lite_Retenue;Justification
+WhisperEngine;default_model;large-v3-turbo;OUI;CRITIQUE (~2.5-3.0 GB RAM/VRAM);base;large-v3-turbo est chargé dans _doInitialize() via service.loadModel(). Sur machine 16 Go sous charge, peut causer OOM/crash. Le modèle base ne consomme que ~145 MB.
+SpeakerIdService;enable_diarization_by_default;true;NON (on-demand);FAIBLE (~150 MB);false;Désactivé par défaut en Lite pour éviter le chargement simultané du modèle ONNX de segmentation de locuteurs au premier enregistrement.
+DocumentRAGService;rag_mode_enabled;true;NON (on-demand);MOYEN (~300-500 MB);false;Désactivé par défaut en Lite pour éviter initialisation de transformers d’embedding locaux si activé.
+LLMService;llm_max_tokens;65536;NON (on-demand);FAIBLE à MOYEN;4096;Réduit le buffer de tokens de complétion pour éviter allocations mémoire excessives côté client et serveur LLM.
+LLMService;llm_provider;lmstudio;NON;NUL (externe);lmstudio;Endpoint HTTP distant/local port 1234, aucun chargement de poids LLM en mémoire de processus Jarvisol au startup.
+StableDiffusionEngine;active_image_model;CyberRealisticPony_V18.0_F16.safetensors;NON;NUL au startup (~7 GB on-demand);CyberRealisticPony_V18.0_F16.safetensors;Non chargé au démarrage d’Engine starting. Uniquement activé sur ouverture/génération dans le dialogue images.
+KokoroTTSService;selected_tts_model;kokoro-82m-q8_0.gguf;NON;NUL au startup (~82 MB on-demand);kokoro-82m-q8_0.gguf;Non chargé au démarrage de TranscriptionScreen. Chargé à la demande lors d’une synthèse vocale.
+MemoryServerManager;memory_server;embedded;NON;MINIME (~30 MB processus séparé);embedded;Serveur SQLite/Python externe léger, non impacté par la RAM du modèle Whisper.

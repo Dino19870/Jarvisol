@@ -1,0 +1,17 @@
+Manifeste;Propriete_Verifiee;Valeur_Attendue;Valeur_Constatee;Statut;Details
+MANIFESTE_SOURCES_FINAL.json;Nombre de fichiers sources modifies;7;7;CONFORME;Exactement 7 fichiers modifies (CORR-08, test unitaire, CMakeLists)
+MANIFESTE_SOURCES_FINAL.json;Perimetre des fichiers modifies;CORR-08 & build/test uniquement;Strictement limite au perimetre autorise;CONFORME;Aucun fichier hors perimetre modifie sans justification
+MANIFESTE_CANDIDATE_FINALE.json;Total fichiers candidate;19415;19415;CONFORME;19415 fichiers inventories avec hashes SHA-256 complets
+MANIFESTE_CANDIDATE_FINALE.json;Taille totale candidate;1170436162 octets (~1116 Mo);1170436162 octets;CONFORME;Taille exacte de la distribution Release Candidate autonome
+MANIFESTE_CANDIDATE_FINALE.json;Presence binaire jarvisol.exe;Present;Present;CONFORME;jarvisol.exe verifie a la racine du Release
+MANIFESTE_CANDIDATE_FINALE.json;Presence runtime Node / MCP Gmail;Present avec 148 paquets;Present;CONFORME;runtime/node/node_modules/@monsoft/mcp-gmail present et autonome
+MANIFESTE_CANDIDATE_FINALE.json;Presence runtime Web Media;Present (yt-dlp, ffmpeg, deno);Present;CONFORME;runtime/web_media present avec binaires
+MANIFESTE_CANDIDATE_FINALE.json;Presence runtime LiteRT;Present (Python 3.11 + litert-lm 0.16.0);Present;CONFORME;runtime/litert_lm present (330.5 Mo, manifest.json valide)
+MANIFESTE_CANDIDATE_FINALE.json;Absence jetons utilisateur & secrets;0 fichier sensible;0 fichier sensible;CONFORME;Zero credentials.json, zero gcp-oauth.keys.json, zero _cacache
+MANIFESTE_CANDIDATE_FINALE.json;Absence residus .tmp;0 fichier .tmp;0 fichier .tmp;CONFORME;Distribution Release propre sans artefacts temporaires de build
+BUNDLE_SOURCE_MANIFEST.json;Taille archive ZIP bundle source;1048074182 octets;1048074182 octets;CONFORME;Match bit-a-bit de la taille de l'archive source autonome
+BUNDLE_SOURCE_MANIFEST.json;SHA-256 archive ZIP bundle source;43FBD2F4A886F19F8F56FB54CB29C4305F9A4744CB92AD9BFB6D3A8D4F882BBB;43FBD2F4A886F19F8F56FB54CB29C4305F9A4744CB92AD9BFB6D3A8D4F882BBB;CONFORME;Hash SHA-256 calcule bit-a-bit identique
+BUNDLE_SOURCE_MANIFEST.json;Depots inclus dans le bundle;CrisperWeaver, CrispASR, CrispEmbed, glint;CrisperWeaver, CrispASR, CrispEmbed, glint;CONFORME;Tous les 4 depots requis emballes dans une structure relative preservee
+BUNDLE_SOURCE_MANIFEST.json;Validation clean build sandbox (TNR-058);PASS (flutter pub get + build windows --release);PASS (jarvisol.exe compile en 129s dans sandbox isolee);CONFORME;BUNDLE_PACKAGING_BUILD_COUNT = 1 execute avec succes
+FINAL_CLEANUP_CANDIDATES.csv;Nombre d'entrees de maintenance cataloguees;~1533 entrees;1533 entrees;CONFORME;Inventaire exhaustif des backups .bak_* et scripts de test
+FINAL_CLEANUP_CANDIDATES.csv;Integrite physique (aucune suppression sauvage);0 suppression executee;0 suppression executee;CONFORME;Tous les fichiers de sauvegarde sont conserves intacts sur disque

@@ -1,0 +1,254 @@
+[
+  {
+    "id": "gemma-4-e2b-it",
+    "name": "Gemma 4 E2B IT (GPU — Texte)",
+    "author": "Google DeepMind",
+    "description": "Modèle Gemma 4 compact pour déploiement mobile GPU. Architecture E2B avec PLE. Build LiteRT texte uniquement — vision nécessite un build multimodal spécifique.",
+    "repoId": "litert-community/gemma-4-E2B-it-litert-lm",
+    "filename": "gemma-4-E2B-it-gpu.litertlm",
+    "downloadUrl": "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it-gpu.litertlm",
+    "sizeBytes": 2008432640,
+    "sizeDisplay": "1.87 Go",
+    "format": "litertlm",
+    "preferredBackend": "GPU",
+    "isMultimodal": false,
+    "defaultConfig": {
+      "temperature": 0.7,
+      "topK": 64,
+      "maxTokens": 4096,
+      "promptTemplate": "gemma"
+    },
+    "isRecommended": true
+  },
+  {
+    "id": "gemma-4-gpu",
+    "name": "Gemma 4 E2B GPU (Compact, Texte)",
+    "author": "Google DeepMind",
+    "description": "Variante GPU compacte de Gemma 4 (E2B) installée via litert-lm. Build texte uniquement — isMultimodal détecté dynamiquement selon le build téléchargé.",
+    "repoId": "litert-community/gemma-4-E2B-it-litert-lm",
+    "filename": "gemma-4-E2B-it-gpu.litertlm",
+    "downloadUrl": "",
+    "sizeBytes": 2008432640,
+    "sizeDisplay": "1.87 Go",
+    "format": "litertlm",
+    "preferredBackend": "GPU",
+    "isMultimodal": false,
+    "defaultConfig": {
+      "temperature": 0.7,
+      "topK": 64,
+      "maxTokens": 4096,
+      "promptTemplate": "gemma"
+    },
+    "isRecommended": false
+  },
+  {
+    "id": "gemma-4-e4b-it",
+    "name": "Gemma 4 E4B IT (GPU — Texte, Grand Contexte)",
+    "author": "Google DeepMind",
+    "description": "Grand modèle Gemma 4 pour raisonnement complexe et synthèses approfondies. Build LiteRT texte uniquement — isMultimodal détecté dynamiquement.",
+    "repoId": "litert-community/gemma-4-E4B-it-litert-lm",
+    "filename": "gemma-4-E4B-it-gpu.litertlm",
+    "downloadUrl": "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it-gpu.litertlm",
+    "sizeBytes": 2969059328,
+    "sizeDisplay": "2.83 Go",
+    "format": "litertlm",
+    "preferredBackend": "GPU",
+    "isMultimodal": false,
+    "defaultConfig": {
+      "temperature": 0.7,
+      "topK": 64,
+      "maxTokens": 4096,
+      "promptTemplate": "gemma"
+    },
+    "isRecommended": true
+  },
+  {
+    "id": "gemma-4-12B-it-gpu",
+    "name": "Gemma 4 12B IT GPU (Raisonnement Avancé, Texte)",
+    "author": "Google DeepMind",
+    "description": "Grand modèle Gemma 4 12B pour raisonnement complexe, synthèses et tâches longue durée. Build LiteRT texte uniquement — isMultimodal détecté dynamiquement.",
+    "repoId": "litert-community/gemma-4-12B-it-litert-lm",
+    "filename": "gemma-4-12B-it-gpu.litertlm",
+    "downloadUrl": "",
+    "sizeBytes": 7516192768,
+    "sizeDisplay": "7.0 Go",
+    "format": "litertlm",
+    "preferredBackend": "GPU",
+    "isMultimodal": false,
+    "defaultConfig": {
+      "temperature": 0.7,
+      "topK": 64,
+      "maxTokens": 4096,
+      "promptTemplate": "gemma"
+    },
+    "isRecommended": false
+  },
+  {
+    "id": "gemma-3n-e2b-it",
+    "name": "Gemma 3n E2B IT (🎙 Audio + 🖼 Vision)",
+    "author": "Google DeepMind",
+    "description": "Modèle multimodal natif avec support combiné audio, image et texte. Seul modèle LiteRT dont le build inclut l'encodeur vision (vision_adapter.xnnpack_cache + vision_encoder_*.bin).",
+    "repoId": "google/gemma-3n-E2B-it-litert-lm",
+    "filename": "gemma-3n-E2B-it-int4.litertlm",
+    "downloadUrl": "https://huggingface.co/google/gemma-3n-E2B-it-litert-lm/resolve/main/gemma-3n-E2B-it-int4.litertlm",
+    "sizeBytes": 3655856128,
+    "sizeDisplay": "3.48 Go",
+    "format": "litertlm",
+    "preferredBackend": "GPU",
+    "isMultimodal": true,
+    "defaultConfig": {
+      "temperature": 0.7,
+      "topK": 64,
+      "maxTokens": 4050,
+      "promptTemplate": "gemma"
+    },
+    "isRecommended": true
+  },
+  {
+    "id": "gemma-3n-e4b-it",
+    "name": "Gemma 3n E4B IT (🎙 Audio + 🖼 Vision — HD)",
+    "author": "Google DeepMind",
+    "description": "Version haute précision de Gemma 3n pour les terminaux à 12 Go+ de RAM. Multimodal natif : audio + vision inclus dans le build LiteRT.",
+    "repoId": "google/gemma-3n-E4B-it-litert-lm",
+    "filename": "gemma-3n-E4B-it-int4.litertlm",
+    "downloadUrl": "https://huggingface.co/google/gemma-3n-E4B-it-litert-lm/resolve/main/gemma-3n-E4B-it-int4.litertlm",
+    "sizeBytes": 4919572480,
+    "sizeDisplay": "4.69 Go",
+    "format": "litertlm",
+    "preferredBackend": "GPU",
+    "isMultimodal": true,
+    "defaultConfig": {
+      "temperature": 0.7,
+      "topK": 64,
+      "maxTokens": 4050,
+      "promptTemplate": "gemma"
+    },
+    "isRecommended": false
+  },
+  {
+    "id": "gemma3-1b-it",
+    "name": "Gemma 3 1B IT (Ultra-Compact)",
+    "author": "Google DeepMind",
+    "description": "Modèle ultra-léger et économe en batterie, réponse ultra-rapide.",
+    "repoId": "litert-community/Gemma3-1B-IT",
+    "filename": "gemma3-1b-it-int4.litertlm",
+    "downloadUrl": "https://huggingface.co/litert-community/Gemma3-1B-IT/resolve/main/gemma3-1b-it-int4.litertlm",
+    "sizeBytes": 584400896,
+    "sizeDisplay": "557 Mo",
+    "format": "litertlm",
+    "preferredBackend": "GPU",
+    "isMultimodal": false,
+    "defaultConfig": {
+      "temperature": 0.7,
+      "topK": 40,
+      "maxTokens": 2048,
+      "promptTemplate": "gemma"
+    },
+    "isRecommended": true
+  },
+  {
+    "id": "qwen-2.5-1.5b-instruct",
+    "name": "Qwen 2.5 1.5B Instruct (4096 Tokens)",
+    "author": "Alibaba Cloud",
+    "description": "Excellente précision en français, analyse de documents et contexte étendu.",
+    "repoId": "litert-community/Qwen2.5-1.5B-Instruct",
+    "filename": "Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm",
+    "downloadUrl": "https://huggingface.co/litert-community/Qwen2.5-1.5B-Instruct/resolve/main/Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm",
+    "sizeBytes": 1597849600,
+    "sizeDisplay": "1.52 Go",
+    "format": "litertlm",
+    "preferredBackend": "GPU",
+    "isMultimodal": false,
+    "defaultConfig": {
+      "temperature": 0.7,
+      "topK": 40,
+      "maxTokens": 4096,
+      "promptTemplate": "qwen"
+    },
+    "isRecommended": true
+  },
+  {
+    "id": "deepseek-r1-distill-qwen-1.5b",
+    "name": "DeepSeek-R1 Distill Qwen 1.5B (Raisonnement)",
+    "author": "DeepSeek / Alibaba",
+    "description": "Modèle spécialisé dans le raisonnement déductif pas à pas et la logique.",
+    "repoId": "litert-community/DeepSeek-R1-Distill-Qwen-1.5B",
+    "filename": "DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv4096.litertlm",
+    "downloadUrl": "https://huggingface.co/litert-community/DeepSeek-R1-Distill-Qwen-1.5B/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv4096.litertlm",
+    "sizeBytes": 1833435136,
+    "sizeDisplay": "1.75 Go",
+    "format": "litertlm",
+    "preferredBackend": "GPU",
+    "isMultimodal": false,
+    "defaultConfig": {
+      "temperature": 0.6,
+      "topK": 40,
+      "maxTokens": 4096,
+      "promptTemplate": "qwen"
+    },
+    "isRecommended": true
+  },
+  {
+    "id": "gemma-2b-it-gpu",
+    "name": "Gemma 2B IT (Monolithique MediaPipe)",
+    "author": "Google",
+    "description": "Modèle autonome classique, chargement et exécution instantanés.",
+    "repoId": "alexdlov/gemma-2b-it-gpu-int4.bin",
+    "filename": "gemma-2b-it-gpu-int4.bin",
+    "downloadUrl": "https://huggingface.co/alexdlov/gemma-2b-it-gpu-int4.bin/resolve/main/gemma-2b-it-gpu-int4.bin",
+    "sizeBytes": 1353744384,
+    "sizeDisplay": "1.29 Go",
+    "format": "bin",
+    "preferredBackend": "GPU",
+    "isMultimodal": false,
+    "defaultConfig": {
+      "temperature": 0.8,
+      "topK": 40,
+      "maxTokens": 1024,
+      "promptTemplate": "gemma"
+    },
+    "isRecommended": false
+  },
+  {
+    "id": "mobile-actions-270m",
+    "name": "MobileActions 270M (FunctionGemma)",
+    "author": "Google AI Edge",
+    "description": "Micro-modèle CPU pour l'exécution rapide de commandes et outils système.",
+    "repoId": "litert-community/functiongemma-270m-ft-mobile-actions",
+    "filename": "mobile_actions_q8_ekv1024.litertlm",
+    "downloadUrl": "https://huggingface.co/litert-community/functiongemma-270m-ft-mobile-actions/resolve/main/mobile_actions_q8_ekv1024.litertlm",
+    "sizeBytes": 288358400,
+    "sizeDisplay": "275 Mo",
+    "format": "litertlm",
+    "preferredBackend": "CPU",
+    "isMultimodal": false,
+    "defaultConfig": {
+      "temperature": 0.5,
+      "topK": 40,
+      "maxTokens": 1024,
+      "promptTemplate": "gemma"
+    },
+    "isRecommended": false
+  },
+  {
+    "id": "tiny-garden-270m",
+    "name": "TinyGarden 270M (Micro CPU)",
+    "author": "Google AI Edge",
+    "description": "Micro-modèle CPU ultra-léger pour les tâches simples, zéro impact batterie.",
+    "repoId": "litert-community/functiongemma-270m-ft-tiny-garden",
+    "filename": "tiny_garden_q8_ekv1024.litertlm",
+    "downloadUrl": "https://huggingface.co/litert-community/functiongemma-270m-ft-tiny-garden/resolve/main/tiny_garden_q8_ekv1024.litertlm",
+    "sizeBytes": 288964608,
+    "sizeDisplay": "275 Mo",
+    "format": "litertlm",
+    "preferredBackend": "CPU",
+    "isMultimodal": false,
+    "defaultConfig": {
+      "temperature": 0.5,
+      "topK": 40,
+      "maxTokens": 1024,
+      "promptTemplate": "gemma"
+    },
+    "isRecommended": false
+  }
+]

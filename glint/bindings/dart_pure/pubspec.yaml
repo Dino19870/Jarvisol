@@ -1,0 +1,23 @@
+name: glint_audio_pure
+description: >-
+  Pure-Dart MPEG-1 Layer III (MP3) encoder and decoder — no native code, no
+  FFI, runs on every platform including the web. Sibling of glint_audio.
+version: 0.6.2
+repository: https://github.com/CrispStrobe/glint/tree/main/bindings/dart_pure
+homepage: https://github.com/CrispStrobe/glint
+issue_tracker: https://github.com/CrispStrobe/glint/issues
+
+topics:
+  - audio
+  - codec
+  - mp3
+  - encoder
+
+environment:
+  sdk: ^3.0.0
+
+# No runtime dependencies: dart:core, dart:math and dart:typed_data only.
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.24.0

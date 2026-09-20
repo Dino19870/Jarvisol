@@ -1,0 +1,35 @@
+test_id,target_production_file,description
+P2-T01,lib/screens/settings_screen.dart,Navigation reelle GoRouter depuis /settings vers /models/image
+P2-T02,lib/screens/image_models_screen.dart,En-tetes de sections GENERATION et INPAINT / MODIFICATION
+P2-T03,lib/screens/image_models_screen.dart,Cartes des 5 modeles Generation depuis le catalogue
+P2-T04,lib/screens/image_models_screen.dart,Cartes des 3 modeles Inpaint depuis le catalogue
+P2-T05,lib/screens/image_models_screen.dart,Badge d etat INSTALLE affiche correctement
+P2-T06,lib/screens/image_models_screen.dart,Badge d etat NON INSTALLE affiche correctement
+P2-T07,lib/screens/image_models_screen.dart,Badge d etat Installation partielle affiche correctement
+P2-T08,lib/screens/image_models_screen.dart,Badge d etat Fichier invalide / verification necessaire
+P2-T09,lib/models/image_model_catalog.dart,Invariant d enum LogicalModelInstallState.unknown
+P2-T10,lib/services/image_model_install_planner.dart,Deduplication stricte des dependances partagees dans le plan
+P2-T11,lib/services/image_model_install_planner.dart,Calcul de l espace disque requis avec overhead temporaire
+P2-T12,lib/services/image_model_install_planner.dart,Mesure de l espace libre sur le volume reel portable
+P2-T13,lib/screens/image_models_screen.dart,Blocage sur licence requise avec liens officiels licence et source
+P2-T14,lib/screens/image_models_screen.dart,Annulation de la licence retournant en securite sans telecharger
+P2-T15,lib/screens/image_models_screen.dart,Acceptation explicite de licence ouvrant le recapitulatif
+P2-T16,lib/screens/image_models_screen.dart,Affichage reel du statut DOWNLOADING avec jauge et pourcentage
+P2-T17,lib/screens/image_models_screen.dart,Affichage reel de l etape VERIFYING dans la jauge de progression
+P2-T18,lib/screens/image_models_screen.dart,Evenement COMPLETED rafraichissant l etat UI vers INSTALLE
+P2-T19,lib/screens/image_models_screen.dart,Banniere exacte affichee en cas d erreur DOWNLOAD_DISK_FULL
+P2-T20,lib/screens/image_models_screen.dart,Banniere exacte affichee en cas d erreur HASH_MISMATCH
+P2-T21,lib/screens/image_models_screen.dart,Bouton Annuler appelant installer.cancel() sans banniere de succes
+P2-T22,lib/screens/image_models_screen.dart,Indicateur visuel de reprise partielle sur fichier .part detecte
+P2-T23,lib/services/settings_service.dart,Invariant: installation Generation preserve strictement active_image_model
+P2-T24,lib/services/settings_service.dart,Invariant: installation Inpaint preserve strictement active_inpaint_model
+P2-T25,lib/screens/image_models_screen.dart,Activation Generation persiste le fileName du primaryComponent
+P2-T26,lib/screens/image_models_screen.dart,Activation Inpaint persiste le fileName du primaryComponent
+P2-T27,lib/screens/image_models_screen.dart,Compatibilite historique: preference enregistree en fileName reconnue comme ACTIF
+P2-T28,lib/screens/image_models_screen.dart,Interdiction formelle d activer un modele corrompu ou incomplet
+P2-T29,lib/screens/image_models_screen.dart,Modele actif configure absent affichant un avertissement sans fallback silencieux
+P2-T30,lib/screens/image_models_screen.dart,Affichage honnete des licences (telechargement autorise / attribution / acceptation)
+P2-T31,lib/services/image_model_catalog_service.dart,Composant present non verifie jamais degrade en NOT_INSTALLED (REG-EXT02-P2-PRESENT-UNVERIFIED-001)
+P2-T32,lib/screens/image_models_screen.dart,Composant non verifie affichant telechargement a determiner apres verification
+P2-T33,lib/services/image_model_install_planner.dart,Verification SHA a la volee omettant le telechargement si fichier valide
+P2-T34,lib/services/image_model_install_planner.dart,Verification SHA a la volee commandant le telechargement si fichier invalide

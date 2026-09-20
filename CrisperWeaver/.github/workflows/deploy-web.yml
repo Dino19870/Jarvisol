@@ -1,0 +1,119 @@
+# Web build + Vercel deploy. Every push to main (and release tags)
+# builds the Flutter web bundle and deploys to
+# https://crisperweaver-web.vercel.app — but only when the Vercel
+# secrets are set, so the workflow stays green on forks.
+#
+# Required repo secrets (Settings → Secrets → Actions):
+#   VERCEL_TOKEN       — Vercel account token
+#   VERCEL_ORG_ID      — from build/web/.vercel/project.json
+#   VERCEL_PROJECT_ID  — likewise (project "web")
+
+name: Deploy Web
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - "v*"
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      FLUTTER_VERSION: "3.44.1"
+      # Pinned to release tags rather than `main` for reproducible builds.
+      #
+      # These are shared clones that parallel workers rebuild, and the drift
+      # is not hypothetical: on 2026-08-01 a `main` pin put the app 13
+      # backends behind the engine and broke the build outright when
+      # CrispasrSpeakerDB gained a required consent argument (PLAN §15.1a,
+      # §15.7). Worse, one of those backends appeared while CrispASR's git
+      # HEAD was UNCHANGED — a worker had rebuilt the dylib — so pinning the
+      # ref is necessary but not sufficient; it bounds the source, not the
+      # artefact.
+      #
+      # Bumping: raise the tag, run `flutter analyze` + the full test suite
+      # (backend_dispatch_test is the drift canary), catalogue any new
+      # backends or add them to its documented `engineOnly` set, then commit
+      # the bump on its own so a regression bisects cleanly.
+      CRISPASR_REPO: CrispStrobe/CrispASR
+      CRISPASR_REF: v0.8.25
+      CRISPEMBED_REPO: CrispStrobe/CrispEmbed
+      CRISPEMBED_REF: v0.17.3
+      GLINT_REPO: CrispStrobe/glint
+      # NB glint uses a per-package tag scheme; the bare `vX.Y.Z` tags are a
+      # stale legacy series (v0.9.0 still carries Dart package 0.1.0).
+      GLINT_REF: glint_audio-v0.11.0
+
+    steps:
+      # -- Checkout repos (pubspec references ../CrispASR, ../CrispEmbed, ../glint) --
+      - name: Check out CrisperWeaver
+        uses: actions/checkout@v5
+        with:
+          path: repos/CrisperWeaver
+
+      - name: Check out sibling CrispASR (Dart FFI package)
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.CRISPASR_REPO }}
+          ref: ${{ env.CRISPASR_REF }}
+          path: repos/CrispASR
+
+      - name: Check out sibling CrispEmbed (Dart FFI package)
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.CRISPEMBED_REPO }}
+          ref: ${{ env.CRISPEMBED_REF }}
+          path: repos/CrispEmbed
+
+      - name: Check out sibling glint (Dart FFI package)
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.GLINT_REPO }}
+          ref: ${{ env.GLINT_REF }}
+          path: repos/glint
+
+      # -- Flutter SDK -----------------------------------------------------
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      # -- Build -----------------------------------------------------------
+      - name: Resolve dependencies
+        working-directory: repos/CrisperWeaver
+        run: flutter pub get
+
+      - name: Generate build info (git hash + timestamp)
+        working-directory: repos/CrisperWeaver
+        run: bash scripts/gen_build_info.sh
+
+      - name: Build web (release, dart2js)
+        working-directory: repos/CrisperWeaver
+        run: flutter build web --release --base-href="/"
+
+      - name: Add Vercel SPA-rewrite config
+        run: cp repos/CrisperWeaver/vercel.json repos/CrisperWeaver/build/web/vercel.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: crisperweaver-web
+          path: repos/CrisperWeaver/build/web
+          retention-days: 14
+
+      # -- Deploy to Vercel ------------------------------------------------
+      - name: Deploy to Vercel (production)
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && env.VERCEL_TOKEN != ''
+        run: |
+          npm install -g vercel@latest
+          vercel deploy repos/CrisperWeaver/build/web --prod --yes --archive=tgz --token="$VERCEL_TOKEN"

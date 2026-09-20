@@ -1,0 +1,13 @@
+Point;Oracle;Resultat;Preuve;Commentaire
+PRECONDITION-RUNNING-PROCESSES;0 jarvisol.exe actif;0;Get-Process jarvisol;Aucun processus en cours lors du déploiement
+PRECONDITION-SOURCE-R2-APP-SO;73B027365D8008B342D3B0DD6B01B7191656F18F33A6698D6BB460D174B759B0 (18744200 octets);73B027365D8008B342D3B0DD6B01B7191656F18F33A6698D6BB460D174B759B0 (18744200 octets);CrisperWeaver/build/.../data/app.so;Binaire Dart R2 vérifié intègre
+PRECONDITION-TARGET-APP-SO;0C59BAE8B768681634722CDE9B4040DD0D112C34B79B15D8A0538B7851D7911A (18744200 octets);0C59BAE8B768681634722CDE9B4040DD0D112C34B79B15D8A0538B7851D7911A (18744200 octets);Final_v2/data/app.so;Binaire v2.4 initial vérifié avant écriture
+EXTERNAL-BACKUP-CREATED;FINAL_POST_GEL_AUDIT_EVIDENCE/r2_before_update/app.so.before_web_r2;PASS;SHA=0C59BAE8... (18744200 octets);Sauvegarde externe créée et vérifiée hors du produit (0 .bak dans Final_v2)
+DELTA-REPLACEMENT-ATOMIC;data/app.so.r2.tmp -> data/app.so;PASS;Staging tmp puis os.replace;Remplacement atomique réussi sans corruption possible
+POST-DEPLOY-APP-SO-HASH;73B027365D8008B342D3B0DD6B01B7191656F18F33A6698D6BB460D174B759B0;73B027365D8008B342D3B0DD6B01B7191656F18F33A6698D6BB460D174B759B0;Final_v2/data/app.so;Nouveau binaire R2 en place dans la distribution
+INVARIANT-JARVISOL-EXE;1DD2E49957449BA2C47AA9B308762B46E9E39E62BB54673B59E48FAA8707563B;1DD2E49957449BA2C47AA9B308762B46E9E39E62BB54673B59E48FAA8707563B;Final_v2/jarvisol.exe;Bootstrap C++ inchangé
+INVARIANT-USER-DATA;preferences/history/voices/cache/models préservés;CONFORME;preferences.json (SHA: B5E5135B...), imported_voices.json (SHA: 06404349...);Toutes les données utilisateur et modèles restent intacts
+SMOKE-MINIMAL-TARGET;Lancement, fenêtre active, fermeture propre;PASS;PID 36312, MainWindowHandle 5114626, Responding=True;Démarrage nominal et fermeture sans erreur
+R2_BUILD_COUNT;1;1;Audit historique;Aucun nouveau build exécuté
+DEPLOY_COPY_COUNT;1;1;Copie unique data/app.so;Exactement un remplacement delta effectué
+AUCUN_BUILD_SUPPLEMENTAIRE;0;0;CrisperWeaver;Aucun flutter build windows exécuté

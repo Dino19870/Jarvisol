@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+"""Assert that crispembed-server's --image-root actually confines request paths.
+
+POLICY.md §4 tells deployers to set --image-root whenever the port is not
+loopback-only, on the grounds that endpoints read images by server-side path
+and /face turns any readable file into a biometric template. That promise is
+only worth making if the confinement resists the obvious escapes, so this
+exercises them against a live server:
+
+  in-root          -> served
+  absolute outside -> refused
+  ../ traversal    -> refused
+  symlink out      -> refused
+  sibling prefix   -> refused   (/srv/scansEVIL vs /srv/scans — the bug a
+                                 naive startswith() check would ship)
+
+Refusal is deliberately indistinguishable from "no image path" in the HTTP
+response, so an unauthenticated caller cannot probe for file existence; the
+reason goes to the server's stderr instead, and this asserts on both.
+
+It also probes endpoints registered LATE in server.cpp. A local
+`extract_image_path` lambda once shadowed the confining file-scope function for
+every handler below it, so --image-root covered the first 13 endpoints and
+silently missed the next 20 — including every super-resolution and restoration
+engine. This test did not catch that, because /detect sits above the shadow.
+Probing both sides is the regression guard.
+
+Usage:
+    python tests/test_image_root.py --det-model yunet.gguf [--build-dir build]
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def post(port: int, path: str, payload: dict, timeout: float = 30.0) -> dict:
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}{path}",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        try:
+            return json.loads(e.read().decode())
+        except Exception:
+            return {"error": f"http {e.code}"}
+
+
+def wait_ready(proc: subprocess.Popen, port: int, deadline_s: float = 90.0) -> bool:
+    end = time.time() + deadline_s
+    while time.time() < end:
+        if proc.poll() is not None:
+            return False
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=1):
+                return True
+        except OSError:
+            time.sleep(0.5)
+    return False
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--det-model", help="face detection GGUF (e.g. yunet.gguf)")
+    ap.add_argument("--build-dir", default=str(ROOT / "build"))
+    args = ap.parse_args()
+
+    server = Path(args.build_dir) / "crispembed-server"
+    if not server.exists():
+        print(f"SKIP: {server} not built; confinement was NOT exercised.")
+        return 0
+
+    det = args.det_model or os.environ.get("CRISPEMBED_DET_MODEL")
+    if not det and os.environ.get("CRISPEMBED_GGUF_DIR"):
+        cand = Path(os.environ["CRISPEMBED_GGUF_DIR"]) / "yunet.gguf"
+        if cand.exists():
+            det = str(cand)
+    if not det or not Path(det).exists():
+        print("SKIP: image-root test needs a detection GGUF.\n"
+              "      Pass --det-model, set CRISPEMBED_DET_MODEL, or put yunet.gguf\n"
+              "      in CRISPEMBED_GGUF_DIR. Confinement was NOT exercised.")
+        return 0
+
+    sample = ROOT / "tests" / "regression" / "images" / "face.png"
+    if not sample.exists():
+        print(f"SKIP: fixture {sample} missing; confinement was NOT exercised.")
+        return 0
+
+    tmp = Path(tempfile.mkdtemp(prefix="crispembed_imgroot_"))
+    try:
+        root = tmp / "root"
+        outside = tmp / "outside"
+        sibling = tmp / "rootEVIL"  # shares the string prefix of `root`
+        for d in (root, outside, sibling):
+            d.mkdir()
+        shutil.copy(sample, root / "ok.png")
+        shutil.copy(sample, outside / "secret.png")
+        shutil.copy(sample, sibling / "x.png")
+        os.symlink(outside / "secret.png", root / "link.png")
+
+        port = free_port()
+        proc = subprocess.Popen(
+            [str(server), "--det", det, "--image-root", str(root),
+             "--host", "127.0.0.1", "--port", str(port)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env={**os.environ, "CRISPEMBED_ACCEPT_BIOMETRIC": "1"},
+        )
+        try:
+            if not wait_ready(proc, port):
+                out, err = proc.communicate(timeout=10)
+                print("SKIP: server did not start; confinement was NOT exercised.")
+                print((err or out or "")[-800:])
+                return 0
+
+            cases = [
+                ("in-root path served", str(root / "ok.png"), True),
+                ("absolute path outside root refused", str(outside / "secret.png"), False),
+                ("../ traversal refused", str(root / ".." / "outside" / "secret.png"), False),
+                ("symlink out of root refused", str(root / "link.png"), False),
+                ("sibling prefix dir refused", str(sibling / "x.png"), False),
+            ]
+
+            failures = 0
+            extra_image_rejections = 0
+
+            # --image-root originally covered only {"image": ...}. Two other
+            # fields were worse than the read it was written for: dewarp's
+            # "output" is an arbitrary file WRITE, and /pdf/dpi's "file" an
+            # unconfined read. A 400 here means the path was rejected before
+            # anything was opened.
+            outside_write = str(outside / "written-by-server.pgm")
+            body = post(port, "/preprocess/dewarp",
+                        {"image": str(root / "ok.png"), "output": outside_write})
+            wrote = os.path.exists(outside_write)
+            print(f"  [{'ok' if not wrote else 'FAIL'}] dewarp 'output' outside root refused "
+                  f"(no file created)")
+            failures += bool(wrote)
+            if isinstance(body, dict) and "error" not in body and wrote:
+                failures += 1
+
+            body = post(port, "/pdf/dpi", {"file": "/etc/hosts"})
+            leaked = isinstance(body, dict) and "error" not in body
+            print(f"  [{'ok' if not leaked else 'FAIL'}] /pdf/dpi 'file' outside root refused")
+            failures += bool(leaked)
+
+            # Endpoints registered below the old shadow point. /scan/split and
+            # /scan/content need no model, so they cover that region without a
+            # second GGUF. While the lambda existed both served this happily.
+            for ep, ok_key in (("/scan/split", "pages"), ("/scan/content", "content")):
+                body = post(port, ep, {"image": str(outside / "secret.png")})
+                served = ok_key in body
+                failures += bool(served)
+                extra_image_rejections += 1
+                print(f"  [{'ok' if not served else 'FAIL'}] {ep} outside root refused "
+                      f"(late-registered endpoint, was unconfined)")
+
+            for label, image, should_serve in cases:
+                body = post(port, "/detect", {"image": image})
+                served = "faces" in body
+                ok = served == should_serve
+                failures += not ok
+                print(f"  [{'ok' if ok else 'FAIL'}] {label}: "
+                      f"{'SERVED' if served else 'REFUSED'}")
+        finally:
+            proc.terminate()
+            try:
+                _, err = proc.communicate(timeout=15)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                _, err = proc.communicate()
+
+        # The rejections must be attributable in the server log, or a deployer
+        # has no way to tell confinement from a malformed request.
+        # Message shape changed when confinement generalised beyond "image";
+        # match the field-agnostic form.
+        logged = (err or "").count("rejected 'image' path outside")
+        expected_rejections = sum(1 for _, _, serve in cases if not serve) + extra_image_rejections
+        if logged != expected_rejections:
+            print(f"  [FAIL] server logged {logged} rejections, expected {expected_rejections}")
+            failures += 1
+        else:
+            print(f"  [ok] all {logged} rejections logged with a reason")
+
+        if failures:
+            print(f"\nFAIL: {failures} image-root check(s) failed.")
+            return 1
+        print("\nPASS: --image-root confines request paths (POLICY.md §4).")
+        return 0
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

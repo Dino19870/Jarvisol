@@ -1,0 +1,1176 @@
+import 'dart:async';
+import 'dart:io';
+import 'dart:ui' show AppExitResponse;
+
+import 'package:path/path.dart' as p;
+
+import 'package:audio_session/audio_session.dart';
+import 'package:flutter/material.dart';
+
+import 'utils/platform_utils.dart' as plat;
+import 'l10n/generated/app_localizations.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/legacy.dart'; // §legacy: selectedAudioPathProvider
+// remains a StateProvider because it is a trivial value holder mutated from 5
+// call sites via `.notifier).state =`. Riverpod 3's Notifier marks `state`
+// @protected, so external assignment would require a wrapper method and
+// updating every consumer — not worth it for a single String? slot.
+import 'package:go_router/go_router.dart';
+import 'package:just_audio_media_kit/just_audio_media_kit.dart';
+import 'package:permission_handler/permission_handler.dart';
+
+import 'utils/app_paths.dart';
+import 'utils/portable_preferences.dart';
+
+import 'screens/transcription_screen.dart';
+import 'screens/settings_screen.dart';
+import 'screens/cloud_llm_settings_screen.dart';
+import 'screens/hotkey_settings_screen.dart';
+import 'screens/local_llm_settings_screen.dart';
+import 'screens/speaker_management_screen.dart';
+import 'screens/model_management_screen.dart';
+import 'screens/image_models_screen.dart';
+import 'screens/history_screen.dart';
+import 'screens/ai_conversations_screen.dart';
+import 'screens/memory_screen.dart';
+import 'screens/logs_screen.dart';
+import 'screens/about_screen.dart';
+import 'screens/storage_screen.dart';
+import 'screens/synthesize_screen.dart';
+import 'screens/voice_clone_wizard_screen.dart';
+import 'screens/translate_screen.dart';
+import 'screens/voice_bake_screen.dart';
+import 'screens/edit_audio_screen.dart';
+import 'screens/subtitle_overlay_screen.dart';
+import 'screens/transcript_compare_screen.dart';
+import 'services/watch_folder_service.dart';
+import 'services/audio_service.dart';
+import 'services/batch_queue_service.dart';
+import 'services/desktop_open_with_bridge.dart';
+import 'native/env_helpers_import.dart';
+import 'services/espeak_data_service.dart';
+import 'services/history_service.dart';
+import 'services/log_service.dart';
+import 'services/llm_service.dart';
+import 'services/native_licenses.dart';
+import 'services/security_scoped_bookmarks.dart';
+import 'services/share_intake_service.dart';
+import 'services/speaker_id_service.dart';
+import 'services/transcription_service.dart';
+import 'services/baked_catalog_loader.dart';
+import 'services/model_service.dart';
+import 'services/hotkey_service.dart';
+import 'services/memory_server_manager.dart';
+import 'services/preset_service.dart';
+import 'services/settings_service.dart';
+import 'services/hardware_advisor_service.dart';
+import 'services/startup_recovery_service.dart';
+import 'theme/app_theme.dart';
+import 'native/crispembed_import.dart' show CrispEmbed;
+import 'engines/transcription_engine.dart'; // Use engine TranscriptionSegment
+
+/// Desktop-side argv intake — populated in [main] from the args
+/// Flutter passes after the executable name. Linux `.desktop`
+/// launches with `Exec=crisper_weaver %F` feed file paths here;
+/// macOS `Open With` (when fully wired in a future pass) will
+/// route through the same list. The CrisperWeaverApp's
+/// postFrameCallback drains this into ShareIntakeService.acceptPaths
+/// once the provider graph is up.
+List<String> _bootArgs = const [];
+
+void main(List<String> args) {
+  runZonedGuarded(() async {
+    _bootArgs = List<String>.unmodifiable(args);
+    WidgetsFlutterBinding.ensureInitialized();
+
+    // Pin kokoro's F0Ntrain + decoder-body compute graphs to CPU on
+    // Apple Silicon Metal. Set BEFORE any libcrispasr session opens —
+    // the C side reads these via env_bool() inside
+    // kokoro_init_from_file. Workaround for an AdainResBlk1d Metal
+    // kernel divergence localised by the upstream bisect on
+    // 2026-05-17; remaining stages (text encoder, BERT, predictor
+    // duration LSTM, iSTFTNet generator) still get Metal acceleration.
+    // Drop this once upstream fixes AdainResBlk1d on Metal.
+    applyKokoroMetalWorkaround();
+
+    // Point libespeak-ng at the bundled espeak-ng-data/ so kokoro's
+    // in-process phonemizer can initialise on platforms where the user
+    // doesn't have espeak-ng installed system-wide (Windows + macOS .app
+    // releases ship the data dir alongside the runtime). Must fire before
+    // the first kokoro session opens — CrispASR reads
+    // CRISPASR_ESPEAK_DATA_PATH once in phonemize_espeak_lib. Android is
+    // handled separately: the assets bundle gets extracted to the docs
+    // dir on first launch and the path is set via the explicitOverride.
+    applyKokoroEspeakDataPath();
+
+    // Android can't dlopen a directory of phoneme tables straight out
+    // of the APK (it's a zip). EspeakDataService extracts the bundled
+    // espeak-ng-data/ asset to the app's docs dir on first launch and
+    // calls applyKokoroEspeakDataPath with the resulting path so
+    // libespeak-ng's init points at writable files. No-op on every
+    // other platform.
+    await EspeakDataService.ensureExtractedAndSetEnv();
+
+    // just_audio ships native code for iOS/Android/macOS/web only. On
+    // Windows and Linux it has no platform implementation, which crashes
+    // every player call with MissingPluginException(disposeAllPlayers).
+    // Route those two platforms through libmpv via just_audio_media_kit.
+    if (plat.isWindows || plat.isLinux) {
+      JustAudioMediaKit.ensureInitialized();
+    }
+
+    // Persist the rolling session log from the very first line so bug reports
+    // always have the startup trail on disk.
+    await Log.instance.enableFileSink(true);
+    await Log.instance.logBootBanner();
+    Log.instance.i('main', 'Jarvisol starting',
+        fields: {'level': Log.instance.minLevel.tag});
+
+    FlutterError.onError = (details) {
+      Log.instance.e(
+        'flutter',
+        details.exceptionAsString(),
+        error: details.exception,
+        stack: details.stack,
+      );
+      FlutterError.presentError(details);
+    };
+
+    // Surface uncaught platform/dispatcher errors too.
+    WidgetsBinding.instance.platformDispatcher.onError = (error, stack) {
+      Log.instance.e('uncaught', '$error', error: error, stack: stack);
+      return true;
+    };
+
+    await _requestPermissions();
+    await _initializeServices();
+    await _configureAudioSession();
+    await registerNativeLicenses();
+
+    // §8.4 — load the baked model catalog from the JSON asset so the
+    // model picker is fully populated at first launch without a network
+    // probe. Must complete before ModelService is first read.
+    await BakedCatalogLoader.load();
+
+    final prefs = await PortablePreferences.getInstance();
+    final settingsService = SettingsService(prefs);
+
+    // Honour persisted user choice for log level and active state.
+    Log.instance.setMinLevel(settingsService.logLevel);
+    Log.instance.setEnabled(settingsService.loggingEnabled);
+
+    final presetService = PresetService(prefs);
+    final hotkeyService = HotkeyService(settingsService);
+    // §5.1.11 — register the persisted hotkey before the first
+    // frame builds. Errors here are caught + logged inside the
+    // service; we don't gate runApp on it because a hotkey
+    // failure shouldn't prevent the app from launching.
+    unawaited(hotkeyService.applyFromSettings());
+
+    runApp(
+      ProviderScope(
+        overrides: [
+          settingsServiceProvider.overrideWithValue(settingsService),
+          presetServiceProvider.overrideWithValue(presetService),
+          hotkeyServiceProvider.overrideWithValue(hotkeyService),
+        ],
+        child: const CrisperWeaverApp(),
+      ),
+    );
+  }, (error, stack) {
+    Log.instance.e('zoned_guard', 'Uncaught zoned error: $error',
+        error: error, stack: stack);
+  });
+}
+
+Future<void> _requestPermissions() async {
+  // Only request mobile-only permissions on mobile platforms. On desktop the
+  // permission_handler plugin simply returns granted or unknown, so asking
+  // is cheap but unnecessary.
+  if (!(plat.isIOS || plat.isAndroid)) return;
+
+  final permissions = <Permission>[
+    Permission.microphone,
+  ];
+  if (plat.isAndroid) {
+    permissions.add(Permission.storage);
+  }
+
+  try {
+    await permissions.request();
+  } catch (e) {
+    debugPrint('Permission request failed: $e');
+  }
+}
+
+/// Gère le fichier session.lock pour signaler une session active et détecter les fermetures brutales.
+Future<void> _handleSessionLockOnStartup() async {
+  try {
+    final lockFile = File(p.join(AppPaths.dataDir.path, 'session.lock'));
+    if (await lockFile.exists()) {
+      try {
+        final content = (await lockFile.readAsString()).trim();
+        Log.instance.w('main', 'Session lock existant détecté : possible arrêt brutal précédent ou instance concurrente',
+            fields: {'lock_content': content});
+      } catch (_) {}
+    }
+    final lockData = 'PID: $pid | Started: ${DateTime.now().toUtc().toIso8601String()}\n';
+    await lockFile.writeAsString(lockData, flush: true);
+    Log.instance.d('main', 'session.lock posé avec succès (PID: $pid)');
+  } catch (e, st) {
+    Log.instance.w('main', 'Impossible d\'écrire session.lock', error: e, stack: st);
+  }
+}
+
+/// Supprime le fichier session.lock lors d'un arrêt propre de l'application.
+Future<void> _removeSessionLockOnExit() async {
+  try {
+    final lockFile = File(p.join(AppPaths.dataDir.path, 'session.lock'));
+    if (await lockFile.exists()) {
+      await lockFile.delete();
+      Log.instance.d('main', 'session.lock supprimé avec succès');
+    }
+  } catch (e) {
+    Log.instance.w('main', 'Échec suppression session.lock : $e');
+  }
+}
+
+/// Initialise les services de base et effectue la migration des données
+/// depuis les anciens emplacements du profil utilisateur.
+Future<void> _initializeServices() async {
+  try {
+    // S'assurer que le dossier data\ existe (crée automatiquement par AppPaths)
+    AppPaths.dataDir;
+    Log.instance.i('main', 'Répertoire de données portable',
+        fields: {'path': AppPaths.dataDir.path});
+
+    // Pose ou vérification du session.lock
+    await _handleSessionLockOnStartup();
+
+    // REQ-POST-002: Détection d'échec Engine starting & récupération automatique Lite
+    final recoveryResult = await StartupRecoveryService.checkAndRecover();
+    if (recoveryResult.wasRecovered) {
+      Log.instance.w('main', '⚠️ Récupération Lite activée après échec au démarrage précédent',
+          fields: {'status': recoveryResult.status.toString(), 'backup': recoveryResult.backupPath});
+    }
+
+    // Migration des données Documents\CrisperWeaver\ → data\
+    // Uniquement si des données existent dans l'ancien emplacement
+    if (AppPaths.legacyDocumentsDir != null) {
+      final migrated = await PortablePreferences.migrateDocumentsData();
+      if (migrated.isNotEmpty) {
+        Log.instance.i('main', '✅ Migration données utilisateur terminée',
+            fields: {'migrated': migrated.length, 'items': migrated});
+      }
+    }
+  } catch (e) {
+    Log.instance.w('main', 'Initialisation services : $e');
+  }
+}
+
+/// Configure AVAudioSession (iOS) / AudioFocus (Android) so playback
+/// and recording cooperate with the rest of the OS — silent-mode
+/// honours playback, mic recording doesn't permanently steal the
+/// session from other apps, and the `UIBackgroundModes = audio`
+/// declaration in Info.plist actually keeps streaming-mic alive when
+/// the screen locks. `speech()` is just_audio's recommended preset
+/// for transcription/dictation apps: `playAndRecord` category +
+/// `speakerOverride` so speaker output works when no headphones are
+/// connected. No-op on desktop.
+Future<void> _configureAudioSession() async {
+  if (!(plat.isIOS || plat.isAndroid)) return;
+  try {
+    final session = await AudioSession.instance;
+    await session.configure(const AudioSessionConfiguration.speech());
+  } catch (e, st) {
+    Log.instance.w('main', 'audio_session configure failed',
+        error: e, stack: st);
+  }
+}
+
+class CrisperWeaverApp extends ConsumerStatefulWidget {
+  const CrisperWeaverApp({super.key});
+
+  @override
+  ConsumerState<CrisperWeaverApp> createState() => _CrisperWeaverAppState();
+}
+
+class _CrisperWeaverAppState extends ConsumerState<CrisperWeaverApp> {
+  late final AppLifecycleListener _lifecycle;
+  WatchFolderService? _watchFolderService;
+
+  @override
+  void initState() {
+    super.initState();
+    // Kick off OS-level share intake after the first frame so Riverpod's
+    // provider graph is fully built.
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final intake = ref.read(shareIntakeServiceProvider);
+      intake.start();
+      // Desktop argv intake — Linux `.desktop` launches with
+      // `Exec=crisper_weaver %F`, so the file paths arrive as
+      // positional args. The intake service triages them the
+      // same way Android / iOS shares are routed; non-audio,
+      // non-transcript args (e.g. flutter-tool flags) drop
+      // silently. We only run this on desktop platforms — on
+      // mobile the args list is always empty and forwarding
+      // would be a no-op anyway.
+      if (plat.isDesktop) {
+        intake.acceptPaths(_bootArgs);
+      }
+      // macOS Open-With / drag-on-dock bridge — drains the
+      // Swift-side buffer of cold-launch file paths and listens
+      // for live opens after the app is up. No-op on other
+      // platforms (the channel isn't registered there).
+      unawaited(
+          DesktopOpenWithBridge(sink: intake.acceptPaths).start());
+      // Hydrate the batch queue from disk so jobs survive restarts
+      // (§5.23 Q1). Running-when-killed jobs are demoted back to
+      // queued so the next drain pass picks them up; a separate
+      // Q3 path will look for matching .ckpt.jsonl files and stamp
+      // resumeOffsetSec onto each before dispatch (commit 2 of the
+      // batch slice).
+      unawaited(ref.read(batchQueueProvider.notifier).load());
+
+      // §5.25.11 — Pre-load known audio fingerprints from history so
+      // the batch queue can detect already-transcribed files.
+      unawaited(ref.read(historyServiceProvider).list().then((entries) {
+        final fps = entries
+            .where((e) => e.audioFingerprint != null)
+            .map((e) => e.audioFingerprint!)
+            .toList();
+        ref.read(batchQueueProvider.notifier).loadKnownFingerprints(fps);
+      }));
+
+      // §5.25.8 — Start watch-folder service if enabled.
+      if (plat.isDesktop) {
+        final settings = ref.read(settingsServiceProvider);
+        if (settings.watchFolderEnabled && settings.watchFolderPath != null) {
+          _watchFolderService = WatchFolderService(
+            onNewFile: (path) async {
+              final q = ref.read(batchQueueProvider.notifier);
+              // §5.25.11 — Auto-skip already-transcribed files in watch folder.
+              final dup = await q.checkFingerprintDedup(path);
+              if (dup != null) {
+                Log.instance.i('watch-folder',
+                    'skipping duplicate: $path (fingerprint: $dup)');
+                return;
+              }
+              final currentSettings = ref.read(settingsServiceProvider);
+              q.enqueue(
+                path,
+                backend: currentSettings.defaultBackend,
+                modelId: currentSettings.defaultModel,
+                language: currentSettings.defaultLanguage,
+              );
+            },
+          );
+          unawaited(_startWatchFolder(settings));
+        }
+      }
+
+      // EU AI Act Art. 52: first-use AI transparency notice.
+      await _showAiTransparencyNoticeIfNeeded();
+
+      // ── Auto-démarrage memory_server.exe (Windows portable uniquement) ──
+      if (Platform.isWindows) {
+        if (mounted) {
+          // EXT-V1-01: Hardware Capability Advisor bootstrap non bloquant séquencé après l'avis IA
+          unawaited(HardwareAdvisorService.instance.checkAndPromptOnboarding(context));
+        }
+        unawaited(
+          ref.read(memoryServerManagerProvider).start().then((ok) {
+            if (!ok) {
+              Log.instance.w('main',
+                  'Mémoire persistante indisponible — '
+                  'memory_server.exe absent ou non joignable.');
+            }
+          }),
+        );
+      }
+    });
+
+    // On desktop, the user clicking the red close button fires
+    // `applicationShouldTerminate:` → Flutter's onExitRequested. We need
+    // to dispose the CrispASR engine here so ggml-metal's background
+    // residency-set dispatch queue gets cancelled BEFORE the process
+    // calls exit(). Otherwise `ggml_metal_rsets_free` asserts from
+    // inside __cxa_finalize_ranges and macOS pops a "closed
+    // unexpectedly" dialog.
+    _lifecycle = AppLifecycleListener(
+      onExitRequested: _onExitRequested,
+    );
+  }
+
+  /// Resolve the persisted watch folder and start watching it.
+  ///
+  /// On macOS the stored path is only half the state: under the App Store
+  /// sandbox the grant that came from the user picking the folder died with
+  /// that session, so the path alone is unreadable on the next launch and —
+  /// because a sandbox denial makes `stat` fail rather than throw — the
+  /// watcher used to conclude "no such directory" and stop, silently, with
+  /// the setting still displayed as enabled. Resolving the security-scoped
+  /// bookmark first restores the grant; if it cannot be restored we clear
+  /// [SettingsService.watchFolderEnabled] so the UI stops claiming a watch
+  /// that is not running.
+  Future<void> _startWatchFolder(SettingsService settings) async {
+    final service = _watchFolderService;
+    final stored = settings.watchFolderPath;
+    if (service == null || stored == null) return;
+
+    var path = stored;
+    final bookmark = settings.watchFolderBookmark;
+    final bookmarks = SecurityScopedBookmarks();
+
+    if (bookmarks.isSupported && bookmark != null) {
+      final resolved = await bookmarks.resolve(bookmark);
+      if (resolved != null) {
+        // Bookmarks follow a moved or renamed folder, so trust the resolved
+        // path over the stored one and write it back for display.
+        path = resolved.path;
+        if (path != stored) settings.watchFolderPath = path;
+        if (resolved.stale) {
+          // Still resolvable today, not indefinitely. Re-mint it now, while
+          // we hold live access and creation can succeed.
+          final fresh = await bookmarks.create(path);
+          if (fresh != null) settings.watchFolderBookmark = fresh;
+        }
+      } else {
+        Log.instance.w('watch-folder',
+            'security-scoped bookmark no longer resolves — the folder must be '
+            'picked again');
+      }
+    }
+
+    final result = service.start(path);
+    if (result == WatchFolderStartResult.inaccessible) {
+      // Turn the toggle off rather than leave it reading "on" over a watch
+      // that is not running, and flag *why* so Settings can tell the user to
+      // pick the folder again. The path is kept so it can name which one.
+      settings.watchFolderEnabled = false;
+      settings.watchFolderAccessLost = true;
+    } else {
+      settings.watchFolderAccessLost = false;
+    }
+  }
+
+  /// EU AI Act Art. 50(1): inform the user on first launch that this
+  /// application uses AI systems — speech recognition, synthesis, speaker
+  /// identification, document analysis, and LLM-backed text generation —
+  /// and which of them can leave the device once enabled. (Art. 52 in the
+  /// draft numbering; Art. 50 in Regulation (EU) 2024/1689 as adopted.)
+  /// Dismissal is persisted so the dialog only shows once.
+  Future<void> _showAiTransparencyNoticeIfNeeded() async {
+    final settings = ref.read(settingsServiceProvider);
+    if (settings.aiTransparencyNoticeSeen) return;
+
+    // Show after a short delay so the app has fully rendered.
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    if (!mounted) return;
+    try {
+      final l = AppLocalizations.of(context);
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          icon: const Icon(Icons.smart_toy_outlined, size: 32),
+          title: Text(l.aiTransparencyTitle),
+          content: SingleChildScrollView(
+            // The web build has no on-device engine — EngineFactory
+            // defaults it to the HF Space — so the body text's
+            // "runs on your device by default" is true of the native apps
+            // and false here. Same string, different platform, so the
+            // difference has to be stated rather than assumed.
+            child: Text(plat.isWeb
+                ? '${l.aiTransparencyBody}\n\n${l.aiTransparencyWebNote}'
+                : l.aiTransparencyBody),
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () {
+                settings.aiTransparencyNoticeSeen = true;
+                Navigator.of(ctx).pop();
+              },
+              child: Text(l.aiTransparencyAcknowledge),
+            ),
+          ],
+        ),
+      );
+    } catch (_) {}
+  }
+
+  Future<AppExitResponse> _onExitRequested() async {
+    try {
+      Log.instance.i('main', 'exit requested — disposing engine');
+
+      // ── Stop LiteRT-LM server (kills process tree + port 9379) ─────────────
+      // Must be called before log flush so any final LiteRT log lines are captured.
+      if (Platform.isWindows) {
+        LlmService.stopWindowsServer();
+        // ── Stop memory_server.exe (seulement si détenu par Jarvisol) ───────
+        await ref.read(memoryServerManagerProvider).stop();
+      }
+
+      final t = ref.read(transcriptionServiceProvider);
+      t.dispose(); // Returns void, do not await
+
+      // Clean up session lock on graceful exit
+      await _removeSessionLockOnExit();
+
+      // Give it a moment to actually stop any native threads if needed
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await Log.instance.enableFileSink(false); // flush + close sink
+    } catch (e, st) {
+      Log.instance.w('main', 'dispose on exit failed', error: e, stack: st);
+    }
+    return AppExitResponse.exit;
+  }
+
+  @override
+  void dispose() {
+    _watchFolderService?.dispose();
+    _lifecycle.dispose();
+    super.dispose();
+  }
+
+  static final GoRouter _router = GoRouter(
+    initialLocation: '/',
+    routes: [
+      GoRoute(
+        path: '/',
+        name: 'home',
+        builder: (context, state) => const TranscriptionScreen(),
+      ),
+      GoRoute(
+        path: '/settings',
+        name: 'settings',
+        builder: (context, state) => const SettingsScreen(),
+        routes: [
+          // Phone-form sub-screens — wide layouts still see the
+          // dialogs in settings_screen.dart. The branch lives
+          // on the calling ListTile's onTap (isPhoneWidth ?
+          // context.push : showDialog), so these routes are
+          // never reached on desktop unless somebody types the
+          // URL by hand — which still works.
+          GoRoute(
+            path: 'cloud-llm',
+            name: 'settings-cloud-llm',
+            builder: (context, state) => const CloudLlmSettingsScreen(),
+          ),
+          GoRoute(
+            path: 'local-llm',
+            name: 'settings-local-llm',
+            builder: (context, state) => const LocalLlmSettingsScreen(),
+          ),
+          GoRoute(
+            path: 'hotkey',
+            name: 'settings-hotkey',
+            builder: (context, state) => const HotkeySettingsScreen(),
+          ),
+          GoRoute(
+            path: 'speakers',
+            name: 'settings-speakers',
+            builder: (context, state) => const SpeakerManagementScreen(),
+          ),
+        ],
+      ),
+      GoRoute(
+        path: '/models',
+        name: 'models',
+        builder: (context, state) {
+          // Optional `?kind=<ModelKind.name>` deep-link: pre-selects
+          // the filter chip on open. Used by Settings → Local LLM's
+          // "Manage" link to drop the user into the chat-LLM filter.
+          final raw = state.uri.queryParameters['kind'];
+          ModelKind? kind;
+          if (raw != null) {
+            for (final k in ModelKind.values) {
+              if (k.name == raw) {
+                kind = k;
+                break;
+              }
+            }
+          }
+          return ModelManagementScreen(initialKindFilter: kind);
+        },
+      ),
+      GoRoute(
+        path: '/models/image',
+        name: 'image-models',
+        builder: (context, state) => const ImageModelsScreen(),
+      ),
+      GoRoute(
+        path: '/history',
+        name: 'history',
+        builder: (context, state) => const HistoryScreen(),
+      ),
+      GoRoute(
+        path: '/ai-conversations',
+        name: 'ai-conversations',
+        builder: (context, state) => const AiConversationsScreen(),
+      ),
+      GoRoute(
+        path: '/memory',
+        name: 'memory',
+        builder: (context, state) => const MemoryScreen(),
+      ),
+      GoRoute(
+        path: '/logs',
+        name: 'logs',
+        builder: (context, state) => const LogsScreen(),
+      ),
+      GoRoute(
+        path: '/about',
+        name: 'about',
+        builder: (context, state) => const AboutScreen(),
+      ),
+      GoRoute(
+        path: '/storage',
+        name: 'storage',
+        builder: (context, state) => const StorageScreen(),
+      ),
+      GoRoute(
+        path: '/synthesize',
+        name: 'synthesize',
+        builder: (context, state) {
+          // §5.1.12 — the voice-clone wizard hands off via
+          // GoRouter `extra` (in-memory) since the WAV path
+          // may be arbitrarily long. Both keys are optional;
+          // when present, the screen pre-populates its custom-
+          // voice + ref-text fields.
+          final extra = state.extra;
+          String? voiceWavPath;
+          String? refText;
+          String? modelName;
+          if (extra is Map) {
+            final m = extra;
+            final v = m['voiceWavPath'];
+            if (v is String) voiceWavPath = v;
+            final r = m['refText'];
+            if (r is String) refText = r;
+            final mn = m['modelName'];
+            if (mn is String) modelName = mn;
+          }
+          return SynthesizeScreen(
+            initialVoiceWavPath: voiceWavPath,
+            initialRefText: refText,
+            initialModelName: modelName,
+          );
+        },
+      ),
+      GoRoute(
+        path: '/voice-clone',
+        name: 'voice-clone',
+        builder: (context, state) => const VoiceCloneWizardScreen(),
+      ),
+      GoRoute(
+        path: '/translate',
+        name: 'translate',
+        builder: (context, state) => const TranslateScreen(),
+      ),
+      GoRoute(
+        path: '/voice-bake',
+        name: 'voice-bake',
+        builder: (context, state) => const VoiceBakeScreen(),
+      ),
+      GoRoute(
+        path: '/subtitle-overlay',
+        name: 'subtitle-overlay',
+        builder: (context, state) => const SubtitleOverlayScreen(),
+      ),
+      GoRoute(
+        path: '/compare',
+        name: 'compare',
+        builder: (context, state) {
+          final q = state.uri.queryParameters;
+          return TranscriptCompareScreen(
+            leftEntryId: q['left'] ?? '',
+            rightEntryId: q['right'] ?? '',
+          );
+        },
+      ),
+      GoRoute(
+        path: '/edit-audio',
+        name: 'edit-audio',
+        builder: (context, state) {
+          // Source path arrives as a query parameter rather than a
+          // path segment so it survives URL-encoding cleanly on
+          // platforms where the path may contain spaces/specials.
+          final q = state.uri.queryParameters;
+          final src = q['path'] ?? '';
+          // §5.1.5 Phase D — optional `start` + `end` (seconds)
+          // pre-populate a waveform selection on open; optional
+          // `mark` pre-drops a single cut point. Used by the
+          // transcript long-press menu's "edit / mark this segment
+          // in audio editor" actions.
+          double? parse(String? s) => s == null ? null : double.tryParse(s);
+          return EditAudioScreen(
+            sourcePath: src,
+            initialSelectionStartSec: parse(q['start']),
+            initialSelectionEndSec: parse(q['end']),
+            initialCutMarkSec: parse(q['mark']),
+          );
+        },
+      ),
+    ],
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    final locale = ref.watch(localeProvider);
+    Log.instance.d(
+        'locale',
+        'MaterialApp.build locale=$locale '
+            'supported=${AppLocalizations.supportedLocales}');
+
+    return MaterialApp.router(
+      title: 'Jarvisol',
+      debugShowCheckedModeBanner: false,
+      theme: AppTheme.lightTheme,
+      darkTheme: AppTheme.darkTheme,
+      themeMode: ThemeMode.system,
+      routerConfig: _router,
+      locale: locale,
+      // i18n: English (fallback) plus generated app locales.
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      // Fall back to English when the system locale matches no generated locale.
+      localeResolutionCallback: (deviceLocale, supportedLocales) {
+        for (final loc in supportedLocales) {
+          if (loc.languageCode == deviceLocale?.languageCode) return loc;
+        }
+        return const Locale('en');
+      },
+      // Make the title locale-aware too.
+      onGenerateTitle: (ctx) {
+        final l = AppLocalizations.of(ctx);
+        Log.instance.d(
+            'locale',
+            'onGenerateTitle resolved to locale=${Localizations.localeOf(ctx)} '
+                'appName="${l.appName}"');
+        return l.appName;
+      },
+    );
+  }
+}
+
+// Global providers
+// (audioServiceProvider moved into lib/services/audio_service.dart so
+// downstream services can wire to it without round-tripping through
+// main.dart.)
+
+final historyServiceProvider =
+    Provider<HistoryService>((ref) => HistoryService());
+
+final modelServiceProvider = Provider<ModelService>((ref) {
+  final settingsService = ref.watch(settingsServiceProvider);
+  return ModelService(settingsService);
+});
+
+/// §5.25.2 — Optional CrispEmbed instance for semantic transcript search.
+/// Lazy-loads a CrispEmbed instance. On desktop: probes local model files.
+/// On web: async-loads WASM module + fetches model from HuggingFace.
+/// Returns null on any failure — callers fall back to TF-IDF.
+final crispEmbedProvider = FutureProvider<CrispEmbed?>((ref) async {
+  if (plat.isWeb) {
+    return _tryLoadCrispEmbedWeb();
+  }
+  final modelService = ref.watch(modelServiceProvider);
+  return _tryLoadCrispEmbedNative(modelService);
+});
+
+/// §12.3a — Optional cross-encoder reranker for search result re-scoring.
+/// Same lazy-load pattern as [crispEmbedProvider]. Returns null when
+/// no reranker GGUF is downloaded.
+final rerankerProvider = FutureProvider<CrispEmbed?>((ref) async {
+  if (plat.isWeb) return null; // No WASM reranker support yet.
+  final modelService = ref.watch(modelServiceProvider);
+  return _tryLoadRerankerNative(modelService);
+});
+
+CrispEmbed? _tryLoadRerankerNative(ModelService modelService) {
+  try {
+    final modelsDir = modelService.whisperCppDir();
+    final allDefs = [
+      ...ModelCatalog.crispasrBackendModels.values,
+      ...ModelCatalog.whisperCppModels.values,
+    ];
+    for (final def in allDefs) {
+      if (def.kind != ModelKind.reranker) continue;
+      final modelPath = '$modelsDir/${def.fileName}';
+      if (File(modelPath).existsSync()) {
+        return CrispEmbed(modelPath);
+      }
+    }
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/// Desktop/mobile: sync load from local disk.
+CrispEmbed? _tryLoadCrispEmbedNative(ModelService modelService) {
+  try {
+    final modelsDir = modelService.whisperCppDir();
+    // Search both catalog maps for embed models — the imatrix variants
+    // (§12.4) live in crispasrBackendModels, legacy Q8_0 in whisperCppModels.
+    final allDefs = [
+      ...ModelCatalog.crispasrBackendModels.values,
+      ...ModelCatalog.whisperCppModels.values,
+    ];
+    for (final def in allDefs) {
+      if (def.kind != ModelKind.embed) continue;
+      final modelPath = '$modelsDir/${def.fileName}';
+      if (File(modelPath).existsSync()) {
+        return CrispEmbed(modelPath);
+      }
+    }
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/// Web: async load via WASM + model fetch.
+/// Uses the CrispEmbed.load() static method which only exists in
+/// crispembed_web.dart (conditionally imported on web). On native
+/// this function is dead code but must compile — hence the dynamic
+/// dispatch to avoid a static reference to the web-only method.
+Future<CrispEmbed?> _tryLoadCrispEmbedWeb() async {
+  // Dynamic call to CrispEmbed.load() — only exists in the web
+  // conditional import. On native builds this function is never
+  // called (guarded by plat.isWeb) but must still compile.
+  try {
+    // ignore: avoid_dynamic_calls
+    final result = await (CrispEmbed as dynamic).load(
+      nThreads: 1,
+      onProgress: (double p) {
+        Log.instance.d('crispembed-web', 'load progress: ${(p * 100).toStringAsFixed(0)}%');
+      },
+    );
+    return result as CrispEmbed?;
+  } catch (e, st) {
+    Log.instance.w('crispembed-web', 'WASM load failed — semantic search unavailable',
+        error: e, stack: st);
+    return null;
+  }
+}
+
+final transcriptionServiceProvider = Provider<TranscriptionService>((ref) {
+  final audioService = ref.watch(audioServiceProvider);
+  final modelService = ref.watch(modelServiceProvider);
+  final speakerIdService = ref.watch(speakerIdServiceProvider);
+  return TranscriptionService(
+    audioService,
+    modelService,
+    speakerIdService: speakerIdService,
+  );
+});
+
+/// Path to the audio file the user has selected or just recorded — used to
+/// hand off a recording from the recorder widget to the transcription screen.
+final selectedAudioPathProvider = StateProvider<String?>((ref) => null);
+
+// App state using engine TranscriptionSegment
+class AppState {
+  final String? currentTranscription;
+  final bool isTranscribing;
+  final double progress;
+  final String? errorMessage;
+  final List<TranscriptionSegment> segments;
+  final PerformanceStats? performance;
+  /// Per-session map from diariser-emitted speaker labels (e.g.
+  /// "Speaker 1", "Speaker 2") to user-chosen names (e.g. "Alice",
+  /// "Host"). Applied at render time so future segments arriving
+  /// after the rename also get the new label, and so the original
+  /// label is recoverable. Persisted into HistoryEntry on save so
+  /// renames survive across launches.
+  final Map<String, String> speakerNames;
+  /// History entry id of the most recent save. Set by the
+  /// transcription screen / batch drain loop after a successful
+  /// `historyService.save()`. Used by [editSegment] to propagate
+  /// inline edits back to the on-disk JSON (§5.1.3). Null while
+  /// transcription is mid-flight or when nothing has been saved
+  /// yet (e.g. an aborted run).
+  final String? historyEntryId;
+
+  const AppState({
+    this.currentTranscription,
+    this.isTranscribing = false,
+    this.progress = 0.0,
+    this.errorMessage,
+    this.segments = const [],
+    this.performance,
+    this.speakerNames = const {},
+    this.historyEntryId,
+  });
+
+  AppState copyWith({
+    String? currentTranscription,
+    bool? isTranscribing,
+    double? progress,
+    String? errorMessage,
+    List<TranscriptionSegment>? segments,
+    PerformanceStats? performance,
+    Map<String, String>? speakerNames,
+    String? historyEntryId,
+  }) {
+    return AppState(
+      currentTranscription: currentTranscription ?? this.currentTranscription,
+      isTranscribing: isTranscribing ?? this.isTranscribing,
+      progress: progress ?? this.progress,
+      errorMessage: errorMessage ?? this.errorMessage,
+      segments: segments ?? this.segments,
+      performance: performance ?? this.performance,
+      speakerNames: speakerNames ?? this.speakerNames,
+      historyEntryId: historyEntryId ?? this.historyEntryId,
+    );
+  }
+}
+
+/// Performance snapshot for the most recent transcription run.
+class PerformanceStats {
+  final double audioSeconds;
+  final double wallSeconds;
+  final double rtf;
+  final int wordCount;
+  final double wordsPerSecond;
+  final String? engineId;
+  final String? modelId;
+
+  const PerformanceStats({
+    required this.audioSeconds,
+    required this.wallSeconds,
+    required this.rtf,
+    required this.wordCount,
+    required this.wordsPerSecond,
+    this.engineId,
+    this.modelId,
+  });
+
+  static PerformanceStats? fromMetadata(
+    Map<String, dynamic>? md, {
+    String? engineId,
+    String? modelId,
+  }) {
+    if (md == null) return null;
+    final a = (md['audioSeconds'] as num?)?.toDouble();
+    final w = (md['wallSeconds'] as num?)?.toDouble();
+    final r = (md['rtf'] as num?)?.toDouble();
+    final wc = (md['wordCount'] as num?)?.toInt();
+    final wps = (md['wordsPerSecond'] as num?)?.toDouble();
+    if (a == null || w == null) return null;
+    return PerformanceStats(
+      audioSeconds: a,
+      wallSeconds: w,
+      rtf: r ?? 0.0,
+      wordCount: wc ?? 0,
+      wordsPerSecond: wps ?? 0.0,
+      engineId: engineId ?? md['engine'] as String?,
+      modelId: modelId ?? md['model'] as String?,
+    );
+  }
+}
+
+final appStateProvider =
+    NotifierProvider<AppStateNotifier, AppState>(AppStateNotifier.new);
+
+class AppStateNotifier extends Notifier<AppState> {
+  @override
+  AppState build() => const AppState();
+
+  void startTranscription() {
+    // Direct AppState() construction (not copyWith) so a previous
+    // run's `historyEntryId` is genuinely cleared rather than
+    // carried forward by the `?? this.field` fallback in copyWith.
+    // Without this, inline edits made on a fresh transcription
+    // would overwrite the previously-saved entry on disk (§5.1.3).
+    state = const AppState(
+      isTranscribing: true,
+      progress: 0.0,
+    );
+  }
+
+  /// Rename a speaker (e.g. "Speaker 1" → "Alice"). The mapping is
+  /// applied at render time so segments are not mutated; this keeps
+  /// the original label recoverable and means future segments
+  /// arriving with the original label automatically pick up the new
+  /// name. Empty `newName` removes the override.
+  void renameSpeaker(String original, String newName) {
+    if (original.isEmpty) return;
+    final next = Map<String, String>.from(state.speakerNames);
+    if (newName.trim().isEmpty) {
+      next.remove(original);
+    } else {
+      next[original] = newName.trim();
+    }
+    state = state.copyWith(speakerNames: next);
+  }
+
+  void updateProgress(double progress) {
+    state = state.copyWith(progress: progress.clamp(0.0, 1.0));
+  }
+
+  void addSegment(TranscriptionSegment segment) {
+    Log.instance.d('state', 'Adding segment: "${segment.text}"');
+    final updatedSegments = [...state.segments, segment];
+    final fullText = updatedSegments.map((s) => s.text).join(' ');
+    state = state.copyWith(
+        segments: updatedSegments, currentTranscription: fullText);
+  }
+
+  void completeTranscription(
+    List<TranscriptionSegment> segments, {
+    PerformanceStats? performance,
+  }) {
+    final fullText = segments.map((s) => s.text).join(' ');
+    state = state.copyWith(
+      isTranscribing: false,
+      segments: segments,
+      currentTranscription: fullText,
+      progress: 1.0,
+      errorMessage: null,
+      performance: performance,
+    );
+  }
+
+  void setError(String error) {
+    state = state.copyWith(isTranscribing: false, errorMessage: error);
+  }
+
+  void clearTranscription() {
+    state = const AppState();
+  }
+
+  /// Replace the live transcription text in-place. Used by mic-stream
+  /// mode where the engine emits a rolling decode of the last 10 s
+  /// window — each commit overwrites rather than appends, otherwise
+  /// the text would visibly duplicate as the window slides.
+  void replaceLiveStreamingText(String text) {
+    if (text.trim().isEmpty) {
+      state = state.copyWith(currentTranscription: text);
+      return;
+    }
+    final liveSeg = TranscriptionSegment(
+      text: text,
+      startTime: 0.0,
+      endTime: 0.0,
+      confidence: 1.0,
+      metadata: const {'streaming': true},
+    );
+    state = state.copyWith(
+      currentTranscription: text,
+      segments: [liveSeg],
+    );
+  }
+
+  /// Replace a segment's text after the user manually edited it.
+  /// Marks the segment as `edited: true` in metadata so the UI can
+  /// flag it visually. Updates the joined `currentTranscription` so
+  /// downstream consumers (export, copy-all) see the corrected text.
+  void editSegment(int index, String newText) {
+    if (index < 0 || index >= state.segments.length) return;
+    final original = state.segments[index];
+    final updated = TranscriptionSegment(
+      text: newText,
+      startTime: original.startTime,
+      endTime: original.endTime,
+      speaker: original.speaker,
+      confidence: original.confidence,
+      words: original.words,
+      metadata: {
+        ...original.metadata,
+        'edited': true,
+      },
+    );
+    final segments = [...state.segments];
+    segments[index] = updated;
+    state = state.copyWith(
+      segments: segments,
+      currentTranscription: segments.map((s) => s.text).join(' ').trim(),
+    );
+  }
+
+  /// Replace the full transcription text after user manual edit.
+  /// Updates currentTranscription and marks the state as edited.
+  void editFullText(String newFullText) {
+    if (state.segments.length <= 1) {
+      final original = state.segments.isNotEmpty ? state.segments.first : null;
+      final updatedSeg = TranscriptionSegment(
+        text: newFullText,
+        startTime: original?.startTime ?? 0.0,
+        endTime: original?.endTime ?? 0.0,
+        speaker: original?.speaker,
+        confidence: original?.confidence ?? 1.0,
+        metadata: {
+          if (original != null) ...original.metadata,
+          'edited': true,
+        },
+      );
+      state = state.copyWith(
+        currentTranscription: newFullText,
+        segments: [updatedSeg],
+      );
+    } else {
+      state = state.copyWith(
+        currentTranscription: newFullText,
+      );
+    }
+  }
+
+  /// §5.25.10 — Replace the full segment list (e.g. after tagging).
+  /// Updates currentTranscription from the new segments and persists
+  /// tags to the history entry if one exists.
+  void replaceSegments(List<TranscriptionSegment> segments) {
+    state = state.copyWith(
+      segments: segments,
+      currentTranscription: segments.map((s) => s.text).join(' ').trim(),
+    );
+  }
+
+  /// §5.1.3 — clear the saved history id, e.g. when starting a
+  /// new transcription. Without this, post-restart edits on a
+  /// fresh transcription would overwrite the previously-saved
+  /// entry.
+  void setHistoryEntryId(String? id) {
+    state = AppState(
+      currentTranscription: state.currentTranscription,
+      isTranscribing: state.isTranscribing,
+      progress: state.progress,
+      errorMessage: state.errorMessage,
+      segments: state.segments,
+      performance: state.performance,
+      speakerNames: state.speakerNames,
+      historyEntryId: id,
+    );
+  }
+}
+
+/// Manages the app's locale based on user preference or system default.
+class LocaleNotifier extends Notifier<Locale?> {
+  @override
+  Locale? build() {
+    final settingsService = ref.watch(settingsServiceProvider);
+    final localeCode = settingsService.appLocale;
+    Log.instance.d('locale', 'Initial app locale from settings: $localeCode');
+    if (localeCode != null && localeCode.isNotEmpty) {
+      return Locale(localeCode);
+    }
+    return null;
+  }
+
+  Future<void> setLocale(String? languageCode) async {
+    Log.instance.i('locale', 'Changing app locale to: $languageCode');
+    final settingsService = ref.read(settingsServiceProvider);
+    settingsService.appLocale = languageCode;
+    if (languageCode == null || languageCode.isEmpty) {
+      state = null;
+    } else {
+      state = Locale(languageCode);
+    }
+  }
+}
+
+final localeProvider =
+    NotifierProvider<LocaleNotifier, Locale?>(LocaleNotifier.new);
+

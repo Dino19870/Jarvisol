@@ -1,0 +1,10 @@
+component,original_local_path,original_git_remote,original_commit,dirty_at_export,destination_in_monorepo,license,required_for_build,notes
+CrisperWeaver,D:\Antigravity\AgentFolder\CrisperWeaver,https://github.com/CrispStrobe/CrisperWeaver.git,1a6a27c18c25055deb00e04338ba80fefce11ed7,YES,CrisperWeaver,AGPL-3.0,YES,Application Flutter de bureau principale pour Jarvisol
+CrispASR,D:\Antigravity\AgentFolder\CrispASR,https://github.com/CrispStrobe/CrispASR.git,cc498701f1a68d88dd489803ebad10053a924322,YES,CrispASR,MIT,YES,Moteur ASR/TTS ggml compilant whisper.dll et crispasr.dll
+CrispEmbed,D:\Antigravity\AgentFolder\CrispEmbed,https://github.com/CrispStrobe/CrispEmbed.git,4ca16c08bbc6584ce472e2ce2046f0d6256c1f21,NO,CrispEmbed,MIT,YES,Moteur d'embeddings et OCR compilant crispembed.dll
+glint,D:\Antigravity\AgentFolder\glint,https://github.com/CrispStrobe/glint.git,5227708db602fb9dba723ae412d20f0f5d5765c3,YES,glint,MIT,YES,Suite de codecs audio (MP3/AAC/Opus/FLAC/WAV) compilant glint.dll
+hotkey_manager_windows,D:\Antigravity\AgentFolder\CrisperWeaver\packages\hotkey_manager_windows,https://github.com/leanflutter/hotkey_manager.git,vendored,NO,CrisperWeaver/packages/hotkey_manager_windows,MIT,YES,Implémentation Windows du plugin de raccourcis globaux
+sd_server,D:\Antigravity\AgentFolder\CrisperWeaver\sd_server.py,local,local,YES,CrisperWeaver/sd_server.py,AGPL-3.0,NO,Serveur HTTP local Stable Diffusion Vulkan
+memory_server,D:\Antigravity\AgentFolder\CrisperWeaver\memory_server.py,local,local,NO,CrisperWeaver/memory_server.py,AGPL-3.0,NO,Serveur HTTP local ChromaDB / RAG mémoire
+jarvisol_tray,D:\Antigravity\AgentFolder\jarvisol_tray.py,local,local,NO,scripts/jarvisol_tray.py,MIT,NO,Lanceur système dans la barre des tâches pour serveurs auxiliaires
+launch_servers,D:\Antigravity\AgentFolder\launch_servers.vbs,local,local,NO,scripts/launch_servers.vbs,MIT,NO,Script de lancement silencieux sans console parasite

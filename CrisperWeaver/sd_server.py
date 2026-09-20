@@ -1,0 +1,1553 @@
+"""
+Local Neural Text-to-Image HTTP Server for CrisperWeaver
+Multi-Model Pipeline with auto-discovery, adaptive GPU->CPU retry and zero OOM.
+"""
+
+import argparse
+import base64
+import io
+import json
+import os
+import subprocess
+import sys
+import time
+import uuid
+import psutil
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageStat, ImageChops
+
+# --- Detection du repertoire reel (PyInstaller --onefile compatible) ----------
+if getattr(sys, "frozen", False):
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# ------------------------------------------------------------------------------
+
+active_process = None
+
+
+def find_file(filename: str):
+    """Recherche un fichier auxiliaire (VAE, CLIP, T5, sd-cli, IP-Adapter) dans les dossiers connus."""
+    if not filename:
+        return None
+    candidates = [
+        os.path.join(SCRIPT_DIR, "models", "Stable-diffusion", filename),
+        os.path.join(SCRIPT_DIR, "models", filename),
+        os.path.join(SCRIPT_DIR, "sd_vulkan", filename),
+        os.path.join(SCRIPT_DIR, "models", "image_conditioning", "ip_adapter", filename),
+        os.path.join(SCRIPT_DIR, "models", "image_conditioning", "clip_vision", filename),
+        os.path.join(SCRIPT_DIR, "models", "image_conditioning", "detectors", filename),
+    ]
+    # Fallback vers le répertoire runtime de référence si SCRIPT_DIR n'a pas les modèles
+    runtime_ref = os.path.join(os.path.dirname(SCRIPT_DIR), "Jarvisol_V1_POST_GEL_Final_v2")
+    if os.path.isdir(runtime_ref):
+        candidates.extend([
+            os.path.join(runtime_ref, "models", "Stable-diffusion", filename),
+            os.path.join(runtime_ref, "models", filename),
+            os.path.join(runtime_ref, "sd_vulkan", filename),
+            os.path.join(runtime_ref, "models", "image_conditioning", "ip_adapter", filename),
+            os.path.join(runtime_ref, "models", "image_conditioning", "clip_vision", filename),
+            os.path.join(runtime_ref, "models", "image_conditioning", "detectors", filename),
+        ])
+    for c in candidates:
+        if os.path.exists(c):
+            return os.path.abspath(c)
+    return None
+
+
+def find_conditioning_file(filename: str):
+    """Recherche un fichier de conditionnement (IP-Adapter, CLIP Vision, détecteur)."""
+    if not filename:
+        return None
+    direct = find_file(filename)
+    if direct:
+        return direct
+    search_dirs = [
+        os.path.join(SCRIPT_DIR, "models", "image_conditioning"),
+        os.path.join(os.path.dirname(SCRIPT_DIR), "Jarvisol_V1_POST_GEL_Final_v2", "models", "image_conditioning"),
+    ]
+    stem = os.path.splitext(filename)[0].lower()
+    for base in search_dirs:
+        if not os.path.isdir(base):
+            continue
+        for root, _, files in os.walk(base):
+            for f in files:
+                if stem in f.lower() or f.lower() in stem:
+                    return os.path.abspath(os.path.join(root, f))
+    return None
+
+
+# --- Auto-discovery des modeles principaux ------------------------------------
+
+_AUXILIARY_FRAGMENTS = [
+    "ae.", "vae", "clip_l", "clip_g", "t5xxl", "t5-", "lora", "controlnet",
+    "embedding", "textual", "hypernetwork", "ggml", "encoder", "tokenizer",
+    "adapter", "canny", "depth", "normal", "openpose", "shuffle", "mlsd",
+    "hed", "scribble", "seg", "chatterbox", "kokoro", "parakeet", "qwen3-tts",
+    "vibevoice", "f5-tts", "tts", "voice",
+]
+
+
+def _is_auxiliary(filename: str) -> bool:
+    name = filename.lower()
+    if "bakedvae" in name:
+        return False
+    return any(frag in name for frag in _AUXILIARY_FRAGMENTS)
+
+
+def _classify_model(filename: str) -> str:
+    name = filename.lower()
+    if "flux" in name:
+        return "flux"
+    if "chroma" in name:
+        return "chroma"
+    if "sd3" in name or "sd-3" in name or "stable-diffusion-3" in name:
+        return "sd3"
+    if "inpaint" in name:
+        return "inpaint"
+    if "turbo" in name and "sd3" not in name and "flux" not in name and "chroma" not in name:
+        return "turbo"
+    if ("sdxl" in name or "xl" in name or "pony" in name) and "sd1" not in name:
+        return "sdxl"
+    return "sd1x"
+
+
+def scan_available_models() -> dict:
+    search_dirs = [
+        os.path.join(SCRIPT_DIR, "models", "Stable-diffusion"),
+        os.path.join(SCRIPT_DIR, "models"),
+        os.path.join(SCRIPT_DIR, "sd_vulkan"),   # P1 — répertoire portable des modèles
+        os.path.join(os.path.dirname(SCRIPT_DIR), "Jarvisol_V1_POST_GEL_Final_v2", "models", "Stable-diffusion"),
+        os.path.join(os.path.dirname(SCRIPT_DIR), "Jarvisol_V1_POST_GEL_Final_v2", "models"),
+        os.path.join(os.path.dirname(SCRIPT_DIR), "Jarvisol_V1_POST_GEL_Final_v2", "sd_vulkan"),
+    ]
+    found = {"chroma": [], "flux": [], "sd3": [], "sdxl": [], "inpaint": [], "turbo": [], "sd1x": []}
+    seen = set()
+    for d in search_dirs:
+        if not os.path.isdir(d):
+            continue
+        for fname in os.listdir(d):
+            ext = os.path.splitext(fname)[1].lower()
+            if ext not in {".gguf", ".safetensors"}:
+                continue
+            if _is_auxiliary(fname):
+                continue
+            fpath = os.path.abspath(os.path.join(d, fname))
+            if fpath in seen:
+                continue
+            seen.add(fpath)
+            try:
+                if os.path.getsize(fpath) < 200 * 1024 * 1024:
+                    continue
+            except OSError:
+                continue
+            mtype = _classify_model(fname)
+            found[mtype].append(fpath)
+    return found
+
+
+
+_MODEL_CACHE: dict = {}
+
+
+def get_models(force_refresh: bool = False) -> dict:
+    global _MODEL_CACHE
+    if not _MODEL_CACHE or force_refresh:
+        _MODEL_CACHE = scan_available_models()
+        total = sum(len(v) for v in _MODEL_CACHE.values())
+        print(f"[Model Discovery] {total} modele(s) trouve(s) (force_refresh={force_refresh}) :")
+        for mtype, paths in _MODEL_CACHE.items():
+            for p in paths:
+                print(f"  [{mtype.upper():6s}] {os.path.basename(p)}")
+        if total == 0:
+            print("[Model Discovery] ATTENTION : Aucun modele dans models/ - placez un .gguf dans models/Stable-diffusion/")
+    return _MODEL_CACHE
+
+
+def pick_best_model(hint: str = "", force_refresh: bool = False) -> tuple:
+    models = get_models(force_refresh=force_refresh)
+    hint_lower = hint.lower().strip()
+    if hint_lower:
+        # Recherche exacte par type (inpaint inclus)
+        for mtype in ("chroma", "flux", "sd3", "sdxl", "inpaint", "turbo", "sd1x"):
+            if hint_lower == mtype and models.get(mtype):
+                return models[mtype][0], mtype
+        # Recherche partielle dans le nom de fichier (inpaint inclus)
+        for mtype in ("inpaint", "turbo", "sd1x", "sdxl", "sd3", "flux", "chroma"):
+            for p in models.get(mtype, []):
+                if hint_lower in os.path.basename(p).lower():
+                    return p, mtype
+        # Recherche partielle dans le type
+        for mtype in ("chroma", "flux", "sd3", "sdxl", "inpaint", "turbo", "sd1x"):
+            if mtype in hint_lower and models.get(mtype):
+                return models[mtype][0], mtype
+    # Sélection automatique par défaut : inpaint EXCLU (réservé à l'usage explicite)
+    for mtype in ("turbo", "sd1x", "sdxl", "sd3", "flux", "chroma"):
+        if models.get(mtype):
+            return models[mtype][0], mtype
+    return None, None
+
+
+def all_model_names(force_refresh: bool = False) -> list:
+    models = get_models(force_refresh=force_refresh)
+    return [os.path.basename(p) for paths in models.values() for p in paths]
+
+
+def resolve_explicit_model(model_name: str, force_refresh: bool = False) -> tuple:
+    """
+    Résolution STRICTE pour une sélection explicite de modèle (Inpainting / Multi-Images).
+    Interdit formellement toute substitution silencieuse :
+    Si model_name est spécifié mais introuvable, retourne (None, None).
+    """
+    if not model_name or not model_name.strip():
+        return None, None
+    models = get_models(force_refresh=force_refresh)
+
+    # 0. Chemin direct vers un fichier existant sur disque
+    clean_name = model_name.strip()
+    if os.path.isfile(clean_name):
+        norm_path = os.path.abspath(clean_name)
+        for mtype, paths in models.items():
+            for p in paths:
+                if os.path.abspath(p).lower() == norm_path.lower():
+                    return p, mtype
+        return norm_path, _classify_model(os.path.basename(norm_path))
+
+    target_base = os.path.basename(clean_name).lower()
+
+    # 1. Correspondance exacte du nom de fichier
+    for mtype, paths in models.items():
+        for p in paths:
+            base = os.path.basename(p).lower()
+            if base == target_base:
+                return p, mtype
+
+    # 2. Correspondance sans extension ou sous-chaîne significative
+    for mtype, paths in models.items():
+        for p in paths:
+            base = os.path.basename(p).lower()
+            base_no_ext = os.path.splitext(base)[0]
+            target_no_ext = os.path.splitext(target_base)[0]
+            if base_no_ext == target_no_ext or (len(target_no_ext) >= 5 and target_no_ext in base):
+                return p, mtype
+
+    return None, None
+
+
+# --- Helpers ------------------------------------------------------------------
+
+def _kill_proc_tree(proc):
+    """Arrête proprement l'ensemble de l'arbre de processus pour éviter les orphelins."""
+    if proc is None:
+        return
+    try:
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+        else:
+            proc.kill()
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    try:
+        proc.wait(timeout=2)
+    except Exception:
+        pass
+
+
+is_interrupted = False
+
+
+def interrupt_active_generation():
+    global active_process, is_interrupted
+    is_interrupted = True
+    if active_process is not None:
+        try:
+            print("[Neural Image Engine] Interruption manuelle demandée. Arrêt immédiat de l'arbre...")
+            _kill_proc_tree(active_process)
+            active_process = None
+            return True
+        except Exception as e:
+            print(f"[Neural Image Engine] Erreur interruption : {e}")
+    return False
+
+
+_OOM_MARKERS = [
+    "ErrorOutOfDeviceMemory", "vae alloc compute buffer failed",
+    "vae: failed to allocate", "failed to allocate Vulkan",
+    "decode_first_stage failed",
+]
+
+
+def _is_vram_oom(log: str) -> bool:
+    return any(m in log for m in _OOM_MARKERS)
+
+
+def validate_real_image(img_bytes: bytes, min_bytes: int = 500) -> tuple:
+    """
+    Oracle de validation d'image réelle (JARVISOL-IMAGE-PORTABILITY-TIMEOUT-V1).
+    Garantit qu'une image vide, noire, blanche, uniforme, corrompue ou tronquée
+    n'est JAMAIS considérée comme un succès.
+    Retourne (is_valid: bool, reason: str).
+    """
+    if not img_bytes or len(img_bytes) < min_bytes:
+        size_str = f"{len(img_bytes)} octets" if img_bytes else "0 octet"
+        return False, f"GENERATION_FAILED_INVALID_OUTPUT: taille insuffisante ({size_str} < {min_bytes})"
+
+    try:
+        with Image.open(io.BytesIO(img_bytes)) as im:
+            im.load()
+            w, h = im.size
+            if w <= 0 or h <= 0:
+                return False, f"GENERATION_FAILED_INVALID_OUTPUT: dimensions invalides ({w}x{h})"
+
+            rgb = im.convert("RGB")
+            stat = ImageStat.Stat(rgb)
+            extrema = stat.extrema
+            if all(low == high for (low, high) in extrema):
+                val = extrema[0][0]
+                if val == 0:
+                    return False, "GENERATION_FAILED_INVALID_OUTPUT: image entièrement noire"
+                elif val == 255:
+                    return False, "GENERATION_FAILED_INVALID_OUTPUT: image entièrement blanche"
+                return False, f"GENERATION_FAILED_INVALID_OUTPUT: image monochrome uniforme (valeur={val})"
+
+            avg_std = sum(stat.stddev) / len(stat.stddev)
+            if avg_std < 2.0:
+                return False, f"GENERATION_FAILED_INVALID_OUTPUT: variance quasi-nulle ({avg_std:.2f} < 2.0)"
+
+            return True, "OK"
+    except Exception as e:
+        return False, f"GENERATION_FAILED_INVALID_OUTPUT: décodage corrompu ({e})"
+
+
+def _run_sd_cli(cmd: list, work_dir: str, output_png: str, unique_id: str,
+                stalled_timeout: int = 120, base_wall_clock: int = 900,
+                max_wall_clock: int = 7200):
+    """
+    Exécute sd-cli avec surveillance d'activité multi-signaux (stdout + progression CPU psutil)
+    et budget dynamique extensible pour garantir que 'LENT + ACTIF != BLOQUÉ' tout en
+    neutralisant les processus réellement bloqués (STALLED) ou annulés par l'utilisateur.
+    """
+    global active_process, is_interrupted
+    import threading
+    import queue
+
+    is_interrupted = False
+    log_chunks = []
+    q = queue.Queue()
+
+    def _reader(pipe, out_q):
+        try:
+            while True:
+                chunk = pipe.read(256)
+                if not chunk:
+                    break
+                out_q.put(chunk)
+        except Exception:
+            pass
+        finally:
+            pipe.close()
+
+    try:
+        active_process = subprocess.Popen(
+            cmd, cwd=work_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+        )
+        ps_proc = None
+        try:
+            ps_proc = psutil.Process(active_process.pid)
+        except Exception:
+            ps_proc = None
+
+        t = threading.Thread(target=_reader, args=(active_process.stdout, q))
+        t.daemon = True
+        t.start()
+
+        start_time = time.time()
+        last_active_time = time.time()
+        last_stdout_time = time.time()
+        last_cpu_activity_time = time.time()
+        last_cpu_total = 0.0
+        if ps_proc:
+            try:
+                ct = ps_proc.cpu_times()
+                last_cpu_total = ct.user + ct.system
+            except Exception:
+                pass
+
+        effective_wall_clock = float(base_wall_clock)
+        process_state = "ACTIVE"
+
+        while True:
+            # 0. Interruption utilisateur immédiate
+            if is_interrupted:
+                print(f"[Neural Image Engine] [{unique_id}] Annulation utilisateur détectée. Nettoyage...")
+                _kill_proc_tree(active_process)
+                active_process = None
+                if os.path.exists(output_png):
+                    try: os.remove(output_png)
+                    except Exception: pass
+                raw_log = b"".join(log_chunks).decode("utf-8", errors="ignore")
+                return None, f"{raw_log}\n[USER_CANCEL] Opération annulée par l'utilisateur"
+
+            ret = active_process.poll()
+            now = time.time()
+
+            # 1. Collecte des sorties stdout brutes
+            got_stdout = False
+            while not q.empty():
+                try:
+                    c = q.get_nowait()
+                    log_chunks.append(c)
+                    got_stdout = True
+                except queue.Empty:
+                    break
+
+            if got_stdout:
+                last_stdout_time = now
+
+            # 2. Mesure de la progression CPU (Kernel + User)
+            got_cpu_progress = False
+            if ps_proc and ret is None:
+                try:
+                    ct = ps_proc.cpu_times()
+                    curr_cpu_total = ct.user + ct.system
+                    cpu_delta = curr_cpu_total - last_cpu_total
+                    if cpu_delta > 0.05:  # Progression significative de calcul
+                        got_cpu_progress = True
+                        last_cpu_activity_time = now
+                        last_cpu_total = curr_cpu_total
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+
+            # 3. Qualification de l'état du processus (ACTIVE / IDLE_BUT_ALIVE / STALLED / DEAD)
+            if got_stdout or got_cpu_progress:
+                process_state = "ACTIVE"
+                last_active_time = now
+            elif ret is not None:
+                process_state = "DEAD"
+            else:
+                process_state = "IDLE_BUT_ALIVE"
+
+            # 4. Si le processus s'est terminé
+            if ret is not None:
+                t.join(timeout=1.0)
+                while not q.empty():
+                    try:
+                        log_chunks.append(q.get_nowait())
+                    except queue.Empty:
+                        break
+                break
+
+            # 5. Détection de blocage réel (STALLED) : convergence de silence stdout ET absence de calcul CPU
+            inactivity_duration = now - last_active_time
+            if inactivity_duration > stalled_timeout:
+                print(f"[Neural Image Engine] [{unique_id}] WATCHDOG STALLED : Aucune progression CPU ni stdout depuis {inactivity_duration:.1f}s (> {stalled_timeout}s). Processus bloqué tué.")
+                _kill_proc_tree(active_process)
+                active_process = None
+                if os.path.exists(output_png):
+                    try: os.remove(output_png)
+                    except Exception: pass
+                raw_log = b"".join(log_chunks).decode("utf-8", errors="ignore")
+                return None, f"{raw_log}\n[WATCHDOG_STALLED] Processus terminé pour absence d'activité CPU et stdout (> {stalled_timeout}s)"
+
+            # 6. Gestion du plafond dynamique extensible (LENT + ACTIF != BLOQUÉ)
+            elapsed = now - start_time
+            if elapsed > effective_wall_clock:
+                # Si le processus est actif (calcul en cours dans les 30 dernières secondes)
+                if (now - last_active_time) < 30.0 and effective_wall_clock < max_wall_clock:
+                    effective_wall_clock = min(elapsed + 300.0, float(max_wall_clock))
+                    print(f"[Neural Image Engine] [{unique_id}] Budget étendu dynamiquement: calcul CPU actif (écoulé: {int(elapsed)}s, nouveau plafond: {int(effective_wall_clock)}s)")
+                else:
+                    # Non actif ou plafond absolu ultime atteint
+                    print(f"[Neural Image Engine] [{unique_id}] TIMEOUT : Plafond global ({int(effective_wall_clock)}s) atteint sans progression active récente. Processus tué.")
+                    _kill_proc_tree(active_process)
+                    active_process = None
+                    if os.path.exists(output_png):
+                        try: os.remove(output_png)
+                        except Exception: pass
+                    raw_log = b"".join(log_chunks).decode("utf-8", errors="ignore")
+                    return None, f"{raw_log}\n[TIMEOUT] Plafond d'exécution dépassé ({int(effective_wall_clock)}s)"
+
+            time.sleep(0.2)
+
+        active_process = None
+        raw_log = b"".join(log_chunks).decode("utf-8", errors="ignore")
+
+        if os.path.exists(output_png):
+            with open(output_png, "rb") as f:
+                data = f.read()
+            try:
+                os.remove(output_png)
+            except Exception:
+                pass
+
+            # Validation Oracle
+            is_valid, reason = validate_real_image(data)
+            if not is_valid:
+                print(f"[Neural Image Engine] [{unique_id}] [Oracle Rejet] {reason}")
+                return None, f"{raw_log}\n[ORACLE_REJECT] {reason}"
+
+            return data, raw_log
+
+        return None, raw_log
+
+    except Exception as e:
+        if active_process:
+            _kill_proc_tree(active_process)
+            active_process = None
+        if os.path.exists(output_png):
+            try: os.remove(output_png)
+            except Exception: pass
+        return None, str(e)
+
+
+def build_chroma_cmd(sd_cli: str, model_file: str, prompt: str, output_png: str,
+                     vae_file: str, t5_file: str, steps: int = 8,
+                     t5_on_cpu: bool = False, width: int = 768, height: int = 768) -> list:
+    """Construit la commande sd-cli déterministe pour Chroma."""
+    cmd = [
+        sd_cli, "-t", "16", "-p", prompt.strip(),
+        "-W", str(width), "-H", str(height), "--steps", str(steps), "-o", output_png,
+        "--diffusion-model", model_file,
+        "--vae", vae_file,
+        "--t5xxl", t5_file,
+        "--cfg-scale", "1.0",
+        "--guidance", "0.0",
+        "--sampling-method", "euler",
+        "--scheduler", "simple",
+        "--model-args", "chroma_use_dit_mask=false",
+        "--vae-tiling", "--vae-on-cpu",
+    ]
+    if t5_on_cpu:
+        cmd.append("--t5xxl-on-cpu")
+    return cmd
+
+
+def resolve_generation_dimensions(width: int, height: int, mtype: str) -> tuple:
+    """
+    Détermine les dimensions compatibles pour l'architecture cible (AUD-IMG-05 / TNR-057).
+    Profil standard :
+      - chroma / flux / sdxl / sd3 : 768x768 (profil stable VRAM)
+      - sd1x / turbo : 512x512
+    Si la requête spécifie des dimensions valides (multiples de 64 dans la plage supportée) :
+      - chroma / flux / sdxl / sd3 : multiples de 64 dans [512, 768] (ou 1024)
+      - sd1x / turbo : multiples de 64 dans [256, 512]
+    Si non supporté ou hors profil : normalise vers la dimension nominale et indique is_normalized = True.
+    """
+    is_heavy = mtype in ("chroma", "flux", "sdxl", "sd3")
+    nominal_w, nominal_h = (768, 768) if is_heavy else (512, 512)
+
+    if width <= 0 or height <= 0:
+        return nominal_w, nominal_h, False
+
+    valid_multiple = (width % 64 == 0) and (height % 64 == 0)
+
+    if is_heavy:
+        if valid_multiple and (width, height) in [(512, 512), (768, 768)]:
+            return width, height, False
+        else:
+            return nominal_w, nominal_h, (width != nominal_w or height != nominal_h)
+    else:
+        if valid_multiple and (width, height) in [(256, 256), (512, 512)]:
+            return width, height, False
+        else:
+            return nominal_w, nominal_h, (width != nominal_w or height != nominal_h)
+
+
+def _wrap_result(img_bytes: bytes, target_w: int, target_h: int, req_w: int, req_h: int) -> tuple:
+    """Garantit l'alignement strict entre métadonnées annoncées et dimensions réelles de l'image (TNR-057)."""
+    actual_w, actual_h = target_w, target_h
+    if img_bytes:
+        try:
+            with Image.open(io.BytesIO(img_bytes)) as im:
+                actual_w, actual_h = im.size
+        except Exception:
+            pass
+    is_norm = (actual_w != req_w) or (actual_h != req_h)
+    return img_bytes, actual_w, actual_h, is_norm
+
+
+# --- Generation principale ----------------------------------------------------
+
+def generate_real_neural_image(prompt: str, model_name: str = "", width: int = 512, height: int = 512, steps: int = 15) -> tuple:
+    global active_process
+    sd_cli = find_file("sd-cli.exe")
+    unique_id = uuid.uuid4().hex[:8]
+    output_png = os.path.join(SCRIPT_DIR, f"temp_gen_{unique_id}.png")
+
+    model_file, mtype = pick_best_model(model_name)
+    if not model_file:
+        print(f"[Neural Image Engine] [{unique_id}] ERREUR : Aucun modele trouve dans models/")
+        print(f"[Neural Image Engine] Placez un .gguf dans : {os.path.join(SCRIPT_DIR, 'models', 'Stable-diffusion')}")
+        raise RuntimeError("Aucun modèle de diffusion disponible pour la génération.")
+
+    is_chroma = (mtype == "chroma")
+    is_flux   = (mtype == "flux")
+    is_sd3    = (mtype == "sd3")
+    is_sdxl   = (mtype == "sdxl")
+    is_turbo  = (mtype == "turbo")
+
+    w, h, is_normalized = resolve_generation_dimensions(width, height, mtype)
+    if is_normalized:
+        print(f"[Neural Image Engine] [{unique_id}] Normalisation dimensions : demandées {width}x{height} -> effectives {w}x{h} (profil sécurisé VRAM)")
+
+    is_chroma_flash = is_chroma and ("flash" in os.path.basename(model_file).lower())
+    is_lightning = "lightning" in os.path.basename(model_file).lower()
+    if is_chroma:
+        step_count = 8 if is_chroma_flash else 20
+    elif is_flux or is_sd3 or is_turbo:
+        step_count = 4
+    elif is_lightning:
+        step_count = 8
+    else:
+        step_count = 25
+    clean_prompt = prompt.strip()
+
+    print(f"[Neural Image Engine] [{unique_id}] Modele : \"{os.path.basename(model_file)}\" (type:{mtype})")
+    print(f"[Neural Image Engine] [{unique_id}] Prompt : \"{clean_prompt}\" ({w}x{h}, {step_count} steps)")
+
+    if not sd_cli:
+        print(f"[Neural Image Engine] [{unique_id}] ERREUR : sd-cli.exe introuvable dans {SCRIPT_DIR}")
+        raise RuntimeError("sd-cli.exe introuvable pour la génération.")
+
+    work_dir = os.path.dirname(sd_cli)
+    base_cmd = [sd_cli, "-t", "16", "-p", clean_prompt,
+                "-W", str(w), "-H", str(h), "--steps", str(step_count), "-o", output_png]
+
+    # --- CHROMA --------------------------------------------------------------
+    if is_chroma:
+        vae_file = find_file("ae.safetensors")
+        t5_file  = find_file("t5xxl_q4_k.gguf")
+
+        if vae_file and t5_file:
+            print(f"[Neural Image Engine] [{unique_id}] [CHROMA] Vulkan-safe args: --model-args chroma_use_dit_mask=false --guidance 0.0 --scheduler simple")
+            chroma_base = build_chroma_cmd(sd_cli, model_file, clean_prompt, output_png,
+                                           vae_file, t5_file, steps=step_count, t5_on_cpu=False, width=w, height=h)
+            print(f"[Neural Image Engine] [{unique_id}] CHROMA 1/2 - T5 GPU")
+            img, log = _run_sd_cli(chroma_base, work_dir, output_png, unique_id)
+            if img:
+                print(f"[Neural Image Engine] [{unique_id}] OK CHROMA (T5 GPU)")
+                return _wrap_result(img, w, h, width, height)
+
+            print(f"[Neural Image Engine] [{unique_id}] CHROMA 2/2 - T5 sur CPU (fallback VRAM)")
+            chroma_cpu = build_chroma_cmd(sd_cli, model_file, clean_prompt, output_png,
+                                          vae_file, t5_file, steps=step_count, t5_on_cpu=True, width=w, height=h)
+            img, log = _run_sd_cli(chroma_cpu, work_dir, output_png, unique_id)
+            if img:
+                print(f"[Neural Image Engine] [{unique_id}] OK CHROMA (T5 CPU)")
+                return _wrap_result(img, w, h, width, height)
+            print(f"[Neural Image Engine] [{unique_id}] CHROMA impossible -> bascule SD")
+        else:
+            missing = []
+            if not vae_file: missing.append("ae.safetensors")
+            if not t5_file: missing.append("t5xxl_q4_k.gguf")
+            print(f"[Neural Image Engine] [{unique_id}] CHROMA: fichiers manquants ({', '.join(missing)}) -> bascule SD")
+
+        mdls = get_models()
+        fallback_file, fallback_type = None, None
+        for ft in ("turbo", "sd1x", "sdxl"):
+            if mdls.get(ft):
+                fallback_file, fallback_type = mdls[ft][0], ft
+                break
+        if fallback_file:
+            print(f"[Neural Image Engine] [{unique_id}] Bascule {fallback_type}: {os.path.basename(fallback_file)}")
+            fb_cmd = [sd_cli, "-t", "16", "-p", clean_prompt,
+                      "-W", "512", "-H", "512", "--steps", "4", "-o", output_png,
+                      "-m", fallback_file, "--cfg-scale", "7.0", "--sampling-method", "euler_a"]
+            for attempt, extra in enumerate([[], ["--vae-on-cpu", "--vae-tiling"], ["--backend", "cpu"]]):
+                mode = "GPU" if attempt == 0 else ("CPU VAE" if attempt == 1 else "Pure CPU")
+                print(f"[Neural Image Engine] [{unique_id}] Bascule {fallback_type} {attempt + 1}/3 - {mode}")
+                img, log = _run_sd_cli(fb_cmd + extra, work_dir, output_png, unique_id)
+                if img:
+                    print(f"[Neural Image Engine] [{unique_id}] OK {fallback_type} {mode}")
+                    return _wrap_result(img, 512, 512, width, height)
+                print(f"[Neural Image Engine] [{unique_id}] {fallback_type} {mode} échoué -> essai suivant")
+        raise RuntimeError(f"Échec de génération d'image Chroma/SD (tentatives GPU/CPU épuisées ou rejetées par l'oracle) — {prompt}")
+
+    # --- FLUX ----------------------------------------------------------------
+    if is_flux:
+        vae_file  = find_file("ae.safetensors")
+        clip_file = find_file("clip_l.safetensors")
+        t5_file   = find_file("t5xxl_q4_k.gguf")
+
+        if vae_file and clip_file:
+            flux_base = base_cmd + [
+                "--diffusion-model", model_file,
+                "--vae", vae_file, "--clip_l", clip_file, "--cfg-scale", "1.0",
+                "--vae-tiling", "--vae-on-cpu",
+            ]
+            if t5_file:
+                flux_base += ["--t5xxl", t5_file]
+
+            print(f"[Neural Image Engine] [{unique_id}] FLUX 1/2 - encodeurs GPU")
+            img, log = _run_sd_cli(flux_base, work_dir, output_png, unique_id)
+            if img:
+                print(f"[Neural Image Engine] [{unique_id}] OK FLUX (encodeurs GPU)")
+                return _wrap_result(img, w, h, width, height)
+
+            print(f"[Neural Image Engine] [{unique_id}] FLUX 2/2 - CLIP+T5 sur CPU")
+            extra_cpu = ["--clip-on-cpu"] + (["--t5xxl-on-cpu"] if t5_file else [])
+            img, log = _run_sd_cli(flux_base + extra_cpu, work_dir, output_png, unique_id)
+            if img:
+                print(f"[Neural Image Engine] [{unique_id}] OK FLUX (CLIP+T5 CPU)")
+                return _wrap_result(img, w, h, width, height)
+            print(f"[Neural Image Engine] [{unique_id}] FLUX impossible -> bascule SD")
+        else:
+            print(f"[Neural Image Engine] [{unique_id}] FLUX: VAE/CLIP manquants -> bascule SD")
+
+        mdls = get_models()
+        fallback_file, fallback_type = None, None
+        for ft in ("turbo", "sd1x", "sdxl"):
+            if mdls.get(ft):
+                fallback_file, fallback_type = mdls[ft][0], ft
+                break
+        if fallback_file:
+            print(f"[Neural Image Engine] [{unique_id}] Bascule {fallback_type}: {os.path.basename(fallback_file)}")
+            fb_cmd = [sd_cli, "-t", "16", "-p", clean_prompt,
+                      "-W", "512", "-H", "512", "--steps", "4", "-o", output_png,
+                      "-m", fallback_file, "--cfg-scale", "7.0", "--sampling-method", "euler_a"]
+            for attempt, extra in enumerate([[], ["--vae-on-cpu", "--vae-tiling"], ["--backend", "cpu"]]):
+                mode = "GPU" if attempt == 0 else ("CPU VAE" if attempt == 1 else "Pure CPU")
+                print(f"[Neural Image Engine] [{unique_id}] Bascule {fallback_type} {attempt + 1}/3 - {mode}")
+                img, log = _run_sd_cli(fb_cmd + extra, work_dir, output_png, unique_id)
+                if img:
+                    print(f"[Neural Image Engine] [{unique_id}] OK {fallback_type} {mode}")
+                    return _wrap_result(img, 512, 512, width, height)
+                print(f"[Neural Image Engine] [{unique_id}] {fallback_type} {mode} échoué -> essai suivant")
+        raise RuntimeError(f"Échec de génération d'image FLUX/SD (tentatives GPU/CPU épuisées ou rejetées par l'oracle) — {prompt}")
+
+    # --- SD3 -----------------------------------------------------------------
+    if is_sd3:
+        vae_file = find_file("sd3_vae.safetensors") or find_file("ae.safetensors")
+        clip_l   = find_file("clip_l.safetensors")
+        clip_g   = find_file("clip_g.safetensors")
+        t5_file  = find_file("t5xxl_q4_k.gguf")
+        if not (vae_file and clip_l and clip_g):
+            print(f"[Neural Image Engine] [{unique_id}] SD3: fichiers auxiliaires manquants")
+            raise RuntimeError(f"SD3: fichiers auxiliaires VAE/CLIP manquants — {prompt}")
+        sd3_args = ["--vae-tiling", "--diffusion-model", model_file,
+                    "--vae", vae_file, "--clip_l", clip_l, "--clip_g", clip_g, "--cfg-scale", "1.5"]
+        if t5_file:
+            sd3_args += ["--t5xxl", t5_file]
+        for attempt, extra in enumerate([[], ["--vae-on-cpu", "--vae-tiling"], ["--backend", "cpu"]]):
+            mode = "GPU" if attempt == 0 else ("CPU VAE" if attempt == 1 else "Pure CPU")
+            print(f"[Neural Image Engine] [{unique_id}] SD3 {attempt + 1}/3 - {mode}")
+            img, log = _run_sd_cli(base_cmd + sd3_args + extra, work_dir, output_png, unique_id)
+            if img:
+                print(f"[Neural Image Engine] [{unique_id}] OK SD3 {mode}")
+                return _wrap_result(img, w, h, width, height)
+            print(f"[Neural Image Engine] [{unique_id}] SD3 {mode} échoué -> essai suivant")
+        raise RuntimeError(f"Échec de génération d'image SD3 (tentatives GPU/CPU épuisées ou rejetées par l'oracle) — {prompt}")
+
+    # --- SDXL / Turbo / SD 1.x -----------------------------------------------
+    m_lower = os.path.basename(model_file).lower()
+    if "lightning" in m_lower:
+        cfg = "2.0"
+        sampler = "euler_a"
+    elif "pony" in m_lower:
+        cfg = "6.0"
+        sampler = "euler_a"
+    elif "juggernaut" in m_lower:
+        cfg = "6.0"
+        sampler = "euler_a"
+    elif is_sdxl:
+        cfg = "6.5"
+        sampler = "euler_a"
+    elif is_turbo:
+        cfg = "7.0"
+        sampler = "euler_a"
+    else:
+        cfg = "7.0"
+        sampler = "euler_a"
+    sd_args = ["-m", model_file, "--cfg-scale", cfg, "--sampling-method", sampler]
+    for attempt, extra in enumerate([[], ["--vae-on-cpu", "--vae-tiling"], ["--backend", "cpu"]]):
+        mode = "GPU" if attempt == 0 else ("CPU VAE" if attempt == 1 else "Pure CPU")
+        print(f"[Neural Image Engine] [{unique_id}] {mtype.upper()} {attempt + 1}/3 - {mode}")
+        img, log = _run_sd_cli(base_cmd + sd_args + extra, work_dir, output_png, unique_id)
+        if img:
+            print(f"[Neural Image Engine] [{unique_id}] OK {mtype.upper()} {mode}")
+            return _wrap_result(img, w, h, width, height)
+        oom_info = " [OOM]" if _is_vram_oom(log) else " [echec]"
+        print(f"[Neural Image Engine] [{unique_id}] {mtype.upper()}{oom_info} ({mode}) -> essai suivant")
+    raise RuntimeError(f"Échec de génération {mtype.upper()} (tentatives GPU/CPU épuisées ou rejetées par l'oracle) — {prompt}")
+
+
+def generate_fallback_art(prompt: str, width: int = 512, height: int = 512) -> bytes:
+    img = Image.new("RGB", (width, height), color=(20, 24, 38))
+    draw = ImageDraw.Draw(img)
+    margin = 20
+    draw.rounded_rectangle([margin, margin, width - margin, height - margin],
+                            radius=14, outline=(100, 180, 255), width=2)
+    draw.text((margin + 16, margin + 14), "CrisperWeaver Neural Image Engine", fill=(180, 200, 255))
+    caption = f'"{prompt}"'
+    if len(caption) > 42:
+        caption = caption[:39] + "...\""
+    draw.text((margin + 16, height - margin - 26), caption, fill=(245, 245, 245))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+
+def find_vae_for_sd1x() -> str:
+    """Cherche le VAE externe pour les modèles SD 1.x / noVAE."""
+    candidates = [
+        "vae-ft-mse-840000-ema-pruned.safetensors",
+        "vae-ft-mse-840000-ema-pruned.ckpt",
+        "vae-ft-mse.safetensors",
+        "vae-ft-ema.safetensors",
+    ]
+    extra_dirs = [
+        os.path.join(SCRIPT_DIR, "models", "VAE"),
+        os.path.join(SCRIPT_DIR, "models", "vae"),
+        os.path.join(SCRIPT_DIR, "sd_vulkan"),   # P1 — VAE dans répertoire portable
+    ]
+    for name in candidates:
+        f = find_file(name)
+        if f:
+            return f
+        for d in extra_dirs:
+            p = os.path.join(d, name)
+            if os.path.exists(p):
+                return os.path.abspath(p)
+    return None
+
+
+def inpaint_image(image_b64: str, mask_b64: str, prompt: str,
+                  strength: float = 0.75, steps: int = 20,
+                  model_hint: str = "",
+                  ip_adapter_file: str = None,
+                  clip_vision_file: str = None,
+                  ref_image_b64: str = None) -> bytes:
+    """
+    Inpainting avec le modèle dédié : image originale + masque blanc → image modifiée.
+    Le masque doit être en niveaux de gris : blanc = zones à régénérer, noir = zones à conserver.
+    Supporte le conditionnement IP-Adapter + CLIP-Vision optionnel pour la composition multi-images.
+    model_hint : nom de fichier partiel ou chemin (ex: "Realistic_Vision_V6.0_NV_B1_inpainting_fp16")
+    """
+    sd_cli = find_file("sd-cli.exe")
+    if not sd_cli:
+        # P0 — pas de fallback silencieux : erreur explicite remontée au client
+        raise RuntimeError("sd-cli.exe introuvable — inpainting impossible (vérifiez sd_vulkan/sd-cli.exe)")
+
+    # Résolution du modèle : sélection explicite stricte -> recherche automatique si non renseigné
+    inpaint_file = None
+    if model_hint and model_hint.strip():
+        inpaint_file, _ = resolve_explicit_model(model_hint)
+        if not inpaint_file:
+            raise RuntimeError(f"MODEL_NOT_FOUND: Le modèle explicitement demandé '{model_hint}' est introuvable sur le disque. Aucune substitution silencieuse autorisée.")
+    else:
+        inpaint_file, _ = pick_best_model("inpaint")
+        if not inpaint_file:
+            raise RuntimeError(f"Aucun modèle inpainting détecté dans les répertoires de modèles — {prompt}")
+
+    uid = uuid.uuid4().hex[:8]
+    img_path  = os.path.join(SCRIPT_DIR, f"tmp_inp_img_{uid}.png")
+    mask_path = os.path.join(SCRIPT_DIR, f"tmp_inp_mask_{uid}.png")
+    ref_path  = os.path.join(SCRIPT_DIR, f"tmp_inp_ref_{uid}.png") if ref_image_b64 else None
+    out_path  = os.path.join(SCRIPT_DIR, f"tmp_inp_out_{uid}.png")
+
+    try:
+        # Écriture des fichiers temporaires
+        with open(img_path,  "wb") as f: f.write(base64.b64decode(image_b64))
+        with open(mask_path, "wb") as f: f.write(base64.b64decode(mask_b64))
+        if ref_path and ref_image_b64:
+            with open(ref_path, "wb") as f: f.write(base64.b64decode(ref_image_b64))
+
+        work_dir = os.path.dirname(sd_cli)
+        cmd = [
+            sd_cli,
+            "-m", inpaint_file,
+            "-p", prompt.strip() or "high quality photo",
+            "--init-img", img_path,
+            "--mask", mask_path,
+            "--strength", str(round(strength, 2)),
+            "--steps", str(steps),
+            "--cfg-scale", "7.0",
+            "--sampling-method", "euler_a",
+            "-t", "8",
+            "-o", out_path,
+        ]
+
+        if ip_adapter_file and clip_vision_file and ref_path:
+            cmd += [
+                "--ip-adapter", ip_adapter_file,
+                "--clip_vision", clip_vision_file,
+                "--ip-adapter-image", ref_path,
+            ]
+            print(f"[Inpaint] [{uid}] IP-Adapter : {os.path.basename(ip_adapter_file)}")
+            print(f"[Inpaint] [{uid}] CLIP-Vision: {os.path.basename(clip_vision_file)}")
+            print(f"[Inpaint] [{uid}] Ref Image  : {os.path.basename(ref_path)}")
+
+        print(f"[Inpaint] [{uid}] Modele : {os.path.basename(inpaint_file)}")
+        print(f"[Inpaint] [{uid}] Prompt : \"{prompt}\" (strength={strength})")
+
+        # VAE externe (indispensable pour les modèles noVAE comme Realistic Vision)
+        vae_file = find_vae_for_sd1x()
+        if vae_file:
+            cmd += ["--vae", vae_file]
+            print(f"[Inpaint] [{uid}] VAE    : {os.path.basename(vae_file)}")
+        else:
+            print(f"[Inpaint] [{uid}] VAE    : (aucun — placez vae-ft-mse-840000-ema-pruned.safetensors dans models/VAE/)")
+
+        # Tentatives d'exécution : GPU optimisé avec délestage VAE et streaming disque des paramètres,
+        # puis CPU VAE, puis Pure CPU
+        attempts = [
+            ("GPU (params-backend disk + VAE CPU)", ["--params-backend", "disk", "--vae-on-cpu", "--vae-tiling"]),
+            ("CPU VAE (fallback VAE)", ["--vae-on-cpu", "--vae-tiling"]),
+            ("Pure CPU", ["--backend", "cpu", "--params-backend", "disk"]),
+        ]
+        for attempt, (mode, extra) in enumerate(attempts):
+            print(f"[Inpaint] [{uid}] Tentative {attempt + 1}/{len(attempts)} — {mode}")
+            result, log = _run_sd_cli(cmd + extra, work_dir, out_path, uid)
+            if result:
+                print(f"[Inpaint] [{uid}] OK ({mode})")
+                return result
+            oom = " [OOM]" if _is_vram_oom(log) else " [echec]"
+            print(f"[Inpaint] [{uid}]{oom} ({mode}) → essai suivant")
+
+        print(f"[Inpaint] [{uid}] Echec GPU+CPU — aucun fallback art (P0)")
+        raise RuntimeError(f"Inpainting échoué après tentatives GPU et CPU (ou rejeté par l'oracle) — {prompt}")
+
+    finally:
+        for p in (img_path, mask_path, ref_path):
+            if p:
+                try: os.remove(p)
+                except Exception: pass
+
+
+# --- Traitement Multi-Images R3 / FIX1 ----------------------------------------
+
+def build_heuristic_r1_precomposition(img_a: Image.Image, img_b: Image.Image,
+                                      mask_img: Image.Image = None,
+                                      feather_radius: int = 12) -> tuple:
+    """
+    Précomposition spatiale PIL R1 pour le mode legacy_heuristic_r1 :
+    - Image B reste le canvas / arrière-plan final
+    - Détermine la bounding box (masque utilisateur si présent, sinon boîte centrale 25%)
+    - Redimensionne Image A de façon strictement homothétique (ratio préservé) pour tenir dans la zone
+    - Construit un masque avec adoucissement gaussien (feathering ~12px)
+    - Colle/fond Image A dans Image B
+    - Garantit : zone hors masque strictement identique à B, pixels de A présents dans la boîte englobante
+    Retourne (composite_image: Image.Image, inpaint_mask: Image.Image).
+    """
+    bw, bh = img_b.size
+    canvas_b = img_b.convert("RGB")
+
+    # 1. Détermination du masque et de la bounding box
+    has_custom_mask = False
+    if mask_img is not None:
+        mask_l = mask_img.convert("L").resize((bw, bh), Image.Resampling.NEAREST)
+        bin_mask = mask_l.point(lambda p: 255 if p > 64 else 0)
+        bbox = bin_mask.getbbox()
+        if bbox is not None:
+            has_custom_mask = True
+            inpaint_mask = bin_mask
+
+    if not has_custom_mask:
+        # Masque central historique R1 (25% des marges)
+        x0, y0 = int(bw * 0.25), int(bh * 0.25)
+        x1, y1 = int(bw * 0.75), int(bh * 0.75)
+        bbox = (x0, y0, x1, y1)
+        inpaint_mask = Image.new("L", (bw, bh), 0)
+        dm = ImageDraw.Draw(inpaint_mask)
+        dm.rectangle(bbox, fill=255)
+
+    x0, y0, x1, y1 = bbox
+    box_w = max(1, x1 - x0)
+    box_h = max(1, y1 - y0)
+
+    # 2. Redimensionnement homothétique d'Image A pour tenir dans la bounding box sans déformation
+    aw, ah = img_a.size
+    scale = min(box_w / float(aw), box_h / float(ah))
+    new_aw = max(1, int(aw * scale))
+    new_ah = max(1, int(ah * scale))
+    resized_a = img_a.resize((new_aw, new_ah), Image.Resampling.LANCZOS)
+
+    # 3. Positionnement centré dans la bounding box
+    pos_x = x0 + (box_w - new_aw) // 2
+    pos_y = y0 + (box_h - new_ah) // 2
+
+    # 4. Extraction du canal alpha d'Image A ou création d'un masque opaque
+    if resized_a.mode == "RGBA":
+        a_alpha = resized_a.split()[3]
+        a_rgb = resized_a.convert("RGB")
+    else:
+        a_alpha = Image.new("L", (new_aw, new_ah), 255)
+        a_rgb = resized_a.convert("RGB")
+
+    # 5. Empreinte pleine taille et feathering
+    footprint = Image.new("L", (bw, bh), 0)
+    footprint.paste(a_alpha, (pos_x, pos_y))
+
+    # Restreindre strictement à la zone inpaint_mask
+    footprint = ImageChops.darker(footprint, inpaint_mask)
+
+    if feather_radius > 0:
+        feathered_mask = footprint.filter(ImageFilter.GaussianBlur(radius=feather_radius))
+        # Garantir que hors du inpaint_mask, l'alpha reste strictement 0 (identique à B)
+        feathered_mask = ImageChops.darker(feathered_mask, inpaint_mask)
+    else:
+        feathered_mask = footprint
+
+    # 6. Composition de A sur B
+    placed_a = Image.new("RGB", (bw, bh), (0, 0, 0))
+    placed_a.paste(a_rgb, (pos_x, pos_y))
+
+    composite_img = Image.composite(placed_a, canvas_b, feathered_mask)
+
+    return composite_img, inpaint_mask
+
+
+def detect_face_yolov8(image: Image.Image, sd_cli_path: str, model_path: str, detector_path: str) -> list:
+    """
+    Exécute une détection faciale réelle par YOLOv8 (face_yolov8n.safetensors) via sd-cli.exe.
+    Termine dès que la détection est extraite de stdout (~0.5s).
+    Retourne la liste des détections : [{"object": "face", "confidence": float, "bbox": [x1, y1, x2, y2], "area": float}]
+    """
+    import re
+    import subprocess
+    import uuid
+
+    if not os.path.isfile(sd_cli_path) or not os.path.isfile(detector_path):
+        raise RuntimeError("sd-cli.exe ou face_yolov8n.safetensors introuvable pour la détection faciale.")
+
+    uid = uuid.uuid4().hex[:8]
+    tmp_in = os.path.join(SCRIPT_DIR, f"tmp_det_in_{uid}.png")
+    tmp_out = os.path.join(SCRIPT_DIR, f"tmp_det_out_{uid}.png")
+
+    try:
+        # Assurer 512x512 RGB pour la détection
+        img_512 = image.convert("RGB").resize((512, 512), Image.Resampling.LANCZOS)
+        img_512.save(tmp_in, format="PNG")
+
+        cmd = [
+            sd_cli_path,
+            "-M", "adetailer",
+            "-m", model_path,
+            "-i", tmp_in,
+            "--ad-model", detector_path,
+            "--steps", "1",
+            "-o", tmp_out,
+            "-t", "8",
+        ]
+
+        vae_file = find_vae_for_sd1x()
+        if vae_file:
+            cmd += ["--vae", vae_file]
+
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            cwd=os.path.dirname(sd_cli_path),
+        )
+
+        detections = []
+        detected_count = None
+        t_start = time.time()
+
+        for line in proc.stdout:
+            m_cnt = re.search(r"ADetailer detected (\d+) object\(s\)", line)
+            if m_cnt:
+                detected_count = int(m_cnt.group(1))
+                if detected_count == 0:
+                    try: proc.kill()
+                    except Exception: pass
+                    break
+
+            m_det = re.search(
+                r"ADetailer detection \d+: object=(\w+), class_id=(\d+), confidence=([0-9.]+), bbox=\[x1=([0-9.]+), y1=([0-9.]+), x2=([0-9.]+), y2=([0-9.]+)\]",
+                line
+            )
+            if m_det:
+                obj, cid, conf, x1, y1, x2, y2 = m_det.groups()
+                fx1, fy1, fx2, fy2 = float(x1), float(y1), float(x2), float(y2)
+                area = max(0.0, fx2 - fx1) * max(0.0, fy2 - fy1)
+                detections.append({
+                    "object": obj,
+                    "class_id": int(cid),
+                    "confidence": float(conf),
+                    "bbox": [fx1, fy1, fx2, fy2],
+                    "area": area,
+                })
+                if detected_count is not None and len(detections) >= detected_count:
+                    try: proc.kill()
+                    except Exception: pass
+                    break
+
+            if time.time() - t_start > 15.0:
+                try: proc.kill()
+                except Exception: pass
+                break
+
+        try:
+            proc.wait(timeout=3)
+        except Exception:
+            try: proc.kill()
+            except Exception: pass
+
+        return detections
+
+    finally:
+        for p in (tmp_in, tmp_out):
+            if os.path.exists(p):
+                try: os.remove(p)
+                except Exception: pass
+
+
+def process_multi_image(image_a_b64: str, image_b_b64: str, mask_b64: str = "",
+                        mode: str = "reference_person_or_object", prompt: str = "",
+                        strength: float = 0.75, steps: int = 20, model_hint: str = "") -> dict:
+    """
+    Restauration et exécution du contrat Multi-Images R3/FIX1 (AUD-IMG-01 / TNR-001).
+    Supporte les modes : reference_person_or_object, reference_face, auto_face_detect,
+    manual_mask_priority, legacy_heuristic_r1.
+    """
+    if not image_a_b64 or not image_b_b64:
+        raise ValueError("image_a et image_b sont obligatoires pour la composition multi-images")
+
+    try:
+        raw_a = base64.b64decode(image_a_b64)
+        img_a = Image.open(io.BytesIO(raw_a)).convert("RGBA")
+    except Exception as e:
+        raise ValueError(f"Image A invalide : {e}")
+
+    try:
+        raw_b = base64.b64decode(image_b_b64)
+        img_b = Image.open(io.BytesIO(raw_b)).convert("RGBA")
+    except Exception as e:
+        raise ValueError(f"Image B invalide : {e}")
+
+    # Normalisation des dimensions à 512x512 pour SD 1.5
+    # Image B est la scène cible à modifier / inpainter
+    # Image A est l'image source / de référence (sujet ou visage)
+    img_b_norm = img_b.resize((512, 512), Image.Resampling.LANCZOS)
+    img_a_norm = img_a.resize((512, 512), Image.Resampling.LANCZOS)
+
+    buf_b = io.BytesIO()
+    img_b_norm.save(buf_b, format="PNG")
+    norm_b_b64 = base64.b64encode(buf_b.getvalue()).decode("utf-8")
+
+    buf_a = io.BytesIO()
+    img_a_norm.save(buf_a, format="PNG")
+    norm_a_b64 = base64.b64encode(buf_a.getvalue()).decode("utf-8")
+
+    # Préparation du masque ciblant Image B (scène cible)
+    if mask_b64:
+        try:
+            raw_m = base64.b64decode(mask_b64)
+            mask_img = Image.open(io.BytesIO(raw_m)).convert("L")
+            mask_img = mask_img.resize((512, 512), Image.Resampling.NEAREST)
+            buf_m = io.BytesIO()
+            mask_img.save(buf_m, format="PNG")
+            norm_mask_b64 = base64.b64encode(buf_m.getvalue()).decode("utf-8")
+        except Exception as e:
+            print(f"[Multi-Image] Erreur décodage masque ({e}), génération d'un masque par défaut")
+            mask_img = Image.new("L", (512, 512), 0)
+            draw = ImageDraw.Draw(mask_img)
+            draw.rectangle([128, 128, 384, 384], fill=255)
+            buf_m = io.BytesIO()
+            mask_img.save(buf_m, format="PNG")
+            norm_mask_b64 = base64.b64encode(buf_m.getvalue()).decode("utf-8")
+    else:
+        # Masque central par défaut sur la scène cible Image B (25% surface centrale)
+        mask_img = Image.new("L", (512, 512), 0)
+        draw = ImageDraw.Draw(mask_img)
+        draw.rectangle([128, 128, 384, 384], fill=255)
+        buf_m = io.BytesIO()
+        mask_img.save(buf_m, format="PNG")
+        norm_mask_b64 = base64.b64encode(buf_m.getvalue()).decode("utf-8")
+
+    mode_metadata = {
+        "reference_person_or_object": {
+            "pipeline_type": "NATIVE_IP_ADAPTER",
+            "ip_adapter_file": "ip-adapter-plus_sd15.safetensors",
+            "clip_vision_file": "clip_vision_vit_h.safetensors",
+            "detector_used": None,
+            "capability_detail": "Composition par transfert de sujet IP-Adapter (pondération sémantique)",
+        },
+        "reference_face": {
+            "pipeline_type": "NATIVE_IP_ADAPTER_FACE",
+            "ip_adapter_file": "ip-adapter-plus-face_sd15.safetensors",
+            "clip_vision_file": "clip_vision_vit_h.safetensors",
+            "detector_used": None,
+            "capability_detail": "Transfert de visage avec alignement sans correspondance biométrique stricte",
+        },
+        "auto_face_detect": {
+            "pipeline_type": "AUTO_YOLO_IP_ADAPTER",
+            "ip_adapter_file": "ip-adapter-plus-face_sd15.safetensors",
+            "clip_vision_file": "clip_vision_vit_h.safetensors",
+            "detector_used": "face_yolov8n.safetensors",
+            "capability_detail": "Détection automatique de visage YOLOv8 + conditionnement IP-Adapter Face",
+        },
+        "manual_mask_priority": {
+            "pipeline_type": "MANUAL_MASK_INPAINT",
+            "ip_adapter_file": None,
+            "clip_vision_file": None,
+            "detector_used": None,
+            "capability_detail": "Inpainting guidé par masque utilisateur explicite",
+        },
+        "legacy_heuristic_r1": {
+            "pipeline_type": "FALLBACK_HEURISTIC",
+            "ip_adapter_file": None,
+            "clip_vision_file": None,
+            "detector_used": None,
+            "capability_detail": "Mode heuristique hérité (composition alpha/fusion)",
+        },
+    }
+
+    meta = mode_metadata.get(mode, mode_metadata["reference_person_or_object"])
+
+    sd_cli = find_file("sd-cli.exe")
+    if not sd_cli:
+        raise RuntimeError("sd-cli.exe introuvable pour la composition multi-images")
+
+    # Résolution stricte du modèle (Interdiction substitution silencieuse)
+    inpaint_file = None
+    mtype = None
+    if model_hint and model_hint.strip():
+        inpaint_file, mtype = resolve_explicit_model(model_hint)
+        if not inpaint_file:
+            raise RuntimeError(f"MODEL_NOT_FOUND: Le modèle explicitement sélectionné '{model_hint}' est introuvable sur le disque. Aucune substitution silencieuse autorisée.")
+    else:
+        inpaint_file, mtype = pick_best_model("inpaint")
+
+    if not inpaint_file:
+        raise RuntimeError("Aucun modèle inpainting disponible pour la composition multi-images")
+
+    # Contrôle de compatibilité d'architecture avec les adaptateurs IP-Adapter
+    is_adapter_mode = mode in ("reference_person_or_object", "reference_face", "auto_face_detect")
+    if is_adapter_mode and mtype in ("sdxl", "sd3", "flux", "chroma"):
+        raise ValueError(
+            f"INCOMPATIBLE_MODEL: Le mode '{mode}' requiert un modèle SD 1.5 pour les adaptateurs IP-Adapter. "
+            f"Le modèle sélectionné '{os.path.basename(inpaint_file)}' ({mtype.upper()}) est incompatible."
+        )
+
+    detected_face_bbox = None
+    detector_used_name = None
+
+    if mode == "auto_face_detect":
+        detector_file = find_conditioning_file("face_yolov8n.safetensors")
+        if not detector_file:
+            raise RuntimeError("DETECTOR_NOT_FOUND: Le modèle de détection 'face_yolov8n.safetensors' est introuvable sur le disque.")
+
+        print(f"[Multi-Image] Détection faciale YOLOv8 sur Image B avec {os.path.basename(detector_file)}...")
+        detections = detect_face_yolov8(img_b_norm, sd_cli, inpaint_file, detector_file)
+
+        if not detections:
+            raise ValueError("NO_FACE_DETECTED: Visage automatique : aucun visage détecté dans l'image cible.")
+
+        # MULTI_FACE_SELECTION_RULE: Plus grande bbox faciale détectée
+        target_face = max(detections, key=lambda d: d["area"])
+        bbox = target_face["bbox"]
+        conf = target_face["confidence"]
+        detected_face_bbox = [round(v, 1) for v in bbox]
+        detector_used_name = os.path.basename(detector_file)
+        print(f"[Multi-Image] Visage détecté : bbox={bbox}, conf={conf:.3f} ({len(detections)} visage(s) trouvé(s))")
+
+        # Construction du masque automatique depuis la bbox faciale avec marge 15% et feathering
+        w, h = 512, 512
+        x1, y1, x2, y2 = bbox
+        bw = x2 - x1
+        bh = y2 - y1
+        pad_x = bw * 0.15
+        pad_y = bh * 0.15
+        mx1 = max(0, int(x1 - pad_x))
+        my1 = max(0, int(y1 - pad_y))
+        mx2 = min(w, int(x2 + pad_x))
+        my2 = min(h, int(y2 + pad_y))
+
+        auto_mask_img = Image.new("L", (w, h), 0)
+        draw_m = ImageDraw.Draw(auto_mask_img)
+        draw_m.rectangle([mx1, my1, mx2, my2], fill=255)
+        auto_mask_feathered = auto_mask_img.filter(ImageFilter.GaussianBlur(radius=8))
+
+        buf_fm = io.BytesIO()
+        auto_mask_feathered.save(buf_fm, format="PNG")
+        norm_mask_b64 = base64.b64encode(buf_fm.getvalue()).decode("utf-8")
+
+        ip_adapter_path = find_conditioning_file(meta["ip_adapter_file"]) if meta.get("ip_adapter_file") else None
+        clip_vision_path = find_conditioning_file(meta["clip_vision_file"]) if meta.get("clip_vision_file") else None
+        ref_b64 = norm_a_b64 if (ip_adapter_path and clip_vision_path) else None
+
+    elif mode == "legacy_heuristic_r1":
+        # Mode R1 : Précomposition spatiale PIL A+B sans adaptateur
+        composite_img, final_mask_img = build_heuristic_r1_precomposition(
+            img_a=img_a,
+            img_b=img_b_norm,
+            mask_img=mask_img,
+            feather_radius=12,
+        )
+        buf_comp = io.BytesIO()
+        composite_img.save(buf_comp, format="PNG")
+        norm_b_b64 = base64.b64encode(buf_comp.getvalue()).decode("utf-8")
+
+        buf_fm = io.BytesIO()
+        final_mask_img.save(buf_fm, format="PNG")
+        norm_mask_b64 = base64.b64encode(buf_fm.getvalue()).decode("utf-8")
+
+        ip_adapter_path = None
+        clip_vision_path = None
+        ref_b64 = None
+    else:
+        ip_adapter_path = find_conditioning_file(meta["ip_adapter_file"]) if meta.get("ip_adapter_file") else None
+        clip_vision_path = find_conditioning_file(meta["clip_vision_file"]) if meta.get("clip_vision_file") else None
+        ref_b64 = norm_a_b64 if (ip_adapter_path and clip_vision_path) else None
+
+    # Exécution de l'inpainting sur Image B (ou composite R1) avec conditionnement éventuel
+    out_bytes = inpaint_image(
+        norm_b_b64,
+        norm_mask_b64,
+        prompt or "high quality composition",
+        strength=strength,
+        steps=steps,
+        model_hint=inpaint_file,
+        ip_adapter_file=ip_adapter_path,
+        clip_vision_file=clip_vision_path,
+        ref_image_b64=ref_b64,
+    )
+
+    out_b64 = base64.b64encode(out_bytes).decode("utf-8")
+    return {
+        "images": [out_b64],
+        "pipeline_type": meta["pipeline_type"],
+        "inpaint_model_used": os.path.basename(inpaint_file),
+        "ip_adapter_used": os.path.basename(ip_adapter_path) if ip_adapter_path else None,
+        "detector_used": detector_used_name if mode == "auto_face_detect" else meta["detector_used"],
+        "face_bbox": detected_face_bbox,
+        "capability_detail": meta["capability_detail"],
+        "info": f"Multi-Image {meta['pipeline_type']} généré avec succès",
+    }
+
+
+# --- Serveur HTTP -------------------------------------------------------------
+
+class SdRequestHandler(BaseHTTPRequestHandler):
+    def _send_cors_headers(self):
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self._send_cors_headers()
+        self.end_headers()
+
+    def do_GET(self):
+        self.send_response(200)
+        self._send_cors_headers()
+        refresh = "refresh=true" in self.path or "/refresh" in self.path
+        # P2 — endpoint sélecteur UI : liste structurée par type (inpaint / génération)
+        if self.path.startswith("/v1/models/image"):
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            mdls = get_models(force_refresh=refresh)
+            resp = []
+            for mtype, paths in mdls.items():
+                for p in paths:
+                    name = os.path.basename(p)
+                    resp.append({
+                        "name": name,
+                        "type": mtype,
+                        "is_inpainting": mtype == "inpaint",
+                    })
+            self.wfile.write(json.dumps(resp).encode("utf-8"))
+        elif self.path == "/" or self.path == "/v1" or self.path.startswith("/v1/models"):
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            mdls = get_models(force_refresh=refresh)
+            names = [os.path.basename(p) for paths in mdls.values() for p in paths]
+            default_file, default_type = pick_best_model(force_refresh=refresh)
+            resp = {
+                "status": "ok",
+                "service": "CrisperWeaver Multi-Model Neural Image Server",
+                "models": names if names else ["(aucun modele trouve)"],
+                "default_model": os.path.basename(default_file) if default_file else None,
+                "default_type": default_type,
+            }
+            self.wfile.write(json.dumps(resp).encode("utf-8"))
+        elif "/sdapi/v1/sd-models" in self.path:
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            mdls = get_models(force_refresh=refresh)
+            resp = []
+            for mtype, paths in mdls.items():
+                for p in paths:
+                    name = os.path.basename(p)
+                    resp.append({"title": name, "model_name": name, "type": mtype})
+            self.wfile.write(json.dumps(resp).encode("utf-8"))
+        elif self.path.startswith("/inpaint/models"):
+            # Liste des modèles inpainting disponibles (rétrocompatibilité)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            mdls = get_models(force_refresh=refresh)
+            inpaint_paths = mdls.get("inpaint", [])
+            resp = [os.path.basename(p) for p in inpaint_paths]
+            self.wfile.write(json.dumps(resp).encode("utf-8"))
+        else:
+            self.end_headers()
+            self.wfile.write(b"CrisperWeaver Neural Image Server Running")
+
+
+    def do_POST(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        post_data = self.rfile.read(content_length) if content_length > 0 else b""
+
+        if "/interrupt" in self.path or "/cancel" in self.path:
+            interrupt_active_generation()
+            body = json.dumps({"status": "interrupted"}).encode("utf-8")
+            self.send_response(200)
+            self._send_cors_headers()
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        # ── Endpoint Multi-Images R3 / FIX1 ────────────────────────────────────
+        if "/edit/multi-image" in self.path:
+            try:
+                body = json.loads(post_data.decode("utf-8"))
+                img_a_b64 = body.get("image_a", "")
+                img_b_b64 = body.get("image_b", "")
+                mask_b64  = body.get("mask", "")
+                mode      = body.get("mode", "reference_person_or_object")
+                prompt    = body.get("prompt", "")
+                strength  = float(body.get("strength", 0.75))
+                steps     = int(body.get("steps", 20))
+                model_h   = body.get("model", "")
+
+                result = process_multi_image(img_a_b64, img_b_b64, mask_b64, mode, prompt, strength, steps, model_h)
+                self.send_response(200)
+                self._send_cors_headers()
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+            except Exception as e:
+                self.send_response(500)
+                self._send_cors_headers()
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e), "status": "error"}).encode("utf-8"))
+                print(f"[Multi-Image] ERREUR : {e}")
+            return
+
+        # ── Endpoint inpainting ────────────────────────────────────────────────
+        if "/inpaint" in self.path:
+            try:
+                body = json.loads(post_data.decode("utf-8"))
+                image_b64  = body.get("image", "")
+                mask_b64   = body.get("mask", "")
+                prompt     = body.get("prompt", "high quality photo")
+                strength   = float(body.get("strength", 0.75))
+                steps      = int(body.get("steps", 20))
+                model_hint = body.get("model", "")
+                print(f"[Inpaint] Requete : \"{prompt}\" (strength={strength}, model='{model_hint or 'auto'}')")
+                raw_bytes = inpaint_image(image_b64, mask_b64, prompt, strength, steps, model_hint)
+                b64_result = base64.b64encode(raw_bytes).decode("utf-8")
+                self.send_response(200)
+                self._send_cors_headers()
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    "images": [b64_result],
+                    "info": "CrisperWeaver Inpainting",
+                }).encode("utf-8"))
+            except Exception as e:
+                self.send_response(500)
+                self._send_cors_headers()
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode("utf-8"))
+                print(f"[Inpaint] ERREUR : {e}")
+            return
+
+        # ── Génération normale ─────────────────────────────────────────────────
+        prompt = "Artwork"
+        model_name = ""
+        width = 512
+        height = 512
+        try:
+            body = json.loads(post_data.decode("utf-8"))
+            prompt = body.get("prompt", "Artwork")
+            model_name = body.get("model", "")
+            width = int(body.get("width", 512))
+            height = int(body.get("height", 512))
+        except Exception:
+            pass
+
+        print(f"[Image Server] Requete recue : \"{prompt}\" (hint : '{model_name}', demande : {width}x{height})")
+        try:
+            raw_bytes, actual_w, actual_h, is_norm = generate_real_neural_image(prompt, model_name, width, height)
+        except Exception as e:
+            err_msg = str(e)
+            print(f"[Image Server] ERREUR : {err_msg}")
+            code = 499 if ("interrompu" in err_msg.lower() or "annulé" in err_msg.lower()) else 500
+            self.send_response(code)
+            self._send_cors_headers()
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": err_msg, "status": "error"}).encode("utf-8"))
+            return
+
+        b64_str = base64.b64encode(raw_bytes).decode("utf-8")
+
+        self.send_response(200)
+        self._send_cors_headers()
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+
+        if "/images/generations" in self.path:
+            resp_obj = {"created": int(time.time()), "data": [{"b64_json": b64_str}], "size": f"{actual_w}x{actual_h}"}
+        else:
+            resp_obj = {
+                "images": [b64_str],
+                "parameters": {
+                    "prompt": prompt,
+                    "model": model_name,
+                    "width": actual_w,
+                    "height": actual_h,
+                    "requested_width": width,
+                    "requested_height": height,
+                    "normalized": is_norm,
+                },
+                "info": "Generated by CrisperWeaver Multi-Model Neural Engine",
+            }
+        self.wfile.write(json.dumps(resp_obj).encode("utf-8"))
+        norm_txt = f" [normalise depuis {width}x{height}]" if is_norm else ""
+        print(f"[Image Server] [OK] Image transmise avec succes ! ({actual_w}x{actual_h}){norm_txt}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="CrisperWeaver Multi-Model Image Server")
+    parser.add_argument("--port", type=int, default=7860, help="Port (default 7860)")
+    args = parser.parse_args()
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", args.port), SdRequestHandler)
+    print("=" * 60)
+    print(f" Serveur Multi-Modeles Text-to-Image CrisperWeaver")
+    print(f" Ecoute active sur : http://127.0.0.1:{args.port}")
+    print("=" * 60)
+
+    default_file, default_type = pick_best_model()
+    if default_file:
+        print(f" Modele par defaut : [{default_type.upper()}] {os.path.basename(default_file)}")
+    else:
+        print(f" ATTENTION : Aucun modele trouve.")
+        print(f"  Placez un .gguf dans : {os.path.join(SCRIPT_DIR, 'models', 'Stable-diffusion')}")
+    print("=" * 60)
+
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        httpd.server_close()
+
+
+if __name__ == "__main__":
+    main()

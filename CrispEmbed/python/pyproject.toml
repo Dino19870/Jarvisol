@@ -1,0 +1,129 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crispembed"
+# Mirrors /VERSION at the repo root. Update both in lockstep.
+version = "0.17.8"
+description = "Lightweight ggml-based text embedding inference (BERT, XLM-R, MPNet, NomicBERT, ModernBERT, DeBERTa-v2, Qwen3, Gemma3, BidirLM-Omni). 23+ verified models, 9x faster than FastEmbed."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.8"
+authors = [
+    { name = "CrispEmbed contributors" },
+]
+keywords = [
+    "embeddings", "sentence-embeddings", "ggml", "bert",
+    "sentence-transformers", "rag", "vector-search",
+    "fastembed", "matryoshka", "multilingual",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Text Processing :: Linguistic",
+]
+dependencies = [
+    "numpy>=1.20",
+]
+
+[project.optional-dependencies]
+image = ["Pillow>=9.0"]
+test  = ["pytest>=7"]
+
+[project.urls]
+Homepage = "https://github.com/CrispStrobe/CrispEmbed"
+Repository = "https://github.com/CrispStrobe/CrispEmbed"
+Issues = "https://github.com/CrispStrobe/CrispEmbed/issues"
+
+# Package layout: the `crispembed/` subdir lives next to this file. Native
+# libs (libcrispembed.{so,dylib,dll}, libggml*.so, etc.) are NOT in the
+# git tree — they are produced by CMake and copied into crispembed/ by the
+# wheel CI step (.github/workflows/python-wheels.yml) before `pip wheel`
+# packages them. The `*` glob in `package-data` then catches whatever shape
+# of native lib the current platform emits.
+[tool.setuptools]
+packages = ["crispembed"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+crispembed = [
+    "*.so",
+    "*.so.*",
+    "*.dylib",
+    "*.dll",
+    "*.pyd",
+    # Acceptable-use terms, staged from the repo root by setup.py so that a
+    # `pip install` user has the EU AI Act Art. 5 prohibitions and the GDPR
+    # Art. 9 note on hand without visiting the repo.
+    "POLICY.md",
+]
+
+# cibuildwheel configuration: the actual lib compile happens in
+# .github/workflows/python-wheels.yml's pre-build step (CMake), so
+# cibuildwheel just needs to package the already-staged tree. We pin
+# manylinux_2_28 because ggml's CPU SIMD paths (AVX, F16C) need a
+# recent-enough glibc + libstdc++.
+[tool.cibuildwheel]
+# Skip 32-bit, PyPy, and unsupported manylinux variants — we ship
+# x86_64 + aarch64 only for now.
+skip = ["*-win32", "*-manylinux_i686", "pp*", "*musllinux*"]
+build = ["cp38-*", "cp39-*", "cp310-*", "cp311-*", "cp312-*", "cp313-*"]
+build-verbosity = 1
+test-requires = ["pytest>=7"]
+# Smoke test: import + load native lib. TOML single-quote string holds
+# the literal double-quoted python -c argument, so the same line works
+# under both /bin/sh (Linux/macOS) and cmd.exe (Windows). cmd.exe does
+# NOT understand single quotes as delimiters — that was the v0.3.1
+# Windows wheel failure ("SyntaxError: EOL while scanning string
+# literal").
+test-command = 'python -c "from crispembed import CrispEmbed; from crispembed._binding import _find_lib; print(_find_lib())"'
+
+[tool.cibuildwheel.linux]
+manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"
+archs = ["x86_64", "aarch64"]
+# libcrispembed.so is now compiled INSIDE quay.io/pypa/manylinux_2_28_*
+# (see the "Configure + build (Linux, manylinux_2_28 container)" step in
+# .github/workflows/python-wheels.yml), so it carries glibc 2.28 symbols
+# and `auditwheel repair` can tag the wheel manylinux_2_28 for real.
+#
+# It used to be built on the Ubuntu 24.04 runner and only then handed to
+# cibuildwheel, so the binary referenced GLIBC_2.38, auditwheel refused to
+# relabel it, and this line had to be `cp {wheel} {dest_dir}/` — a bare
+# `linux_x86_64` tag that PyPI rejects and that silently required Ubuntu
+# 24.04+/Debian 13+/EL 9+. Doing the build in the container removes the
+# cause instead of the symptom.
+#
+# `--exclude` nothing: libggml*.so are staged into the package directory
+# on purpose and must stay resolvable next to libcrispembed.so. The
+# cibuildwheel test-command imports the package and calls _find_lib(), so
+# a repair that relocated them would fail the build rather than ship a
+# broken wheel.
+repair-wheel-command = "auditwheel repair -w {dest_dir} {wheel}"
+
+[tool.cibuildwheel.macos]
+archs = ["arm64"]
+# Match cibuildwheel's macOS arm64 floor (11.0 Big Sur). Set BEFORE the
+# cmake configure step on the host runner so the dylib's LC_BUILD_VERSION
+# records 11.0; otherwise delocate-wheel rejects with "Library
+# dependencies do not satisfy target MacOS version 11.0".
+environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
+# delocate-wheel works on macOS — no override needed. Bundled libcrispembed
+# + libggml*.dylib are inside the package, so --ignore-missing-dependencies
+# in release.yml's CIBW_REPAIR_WHEEL_COMMAND_MACOS handles them.
+
+[tool.cibuildwheel.windows]
+archs = ["AMD64"]

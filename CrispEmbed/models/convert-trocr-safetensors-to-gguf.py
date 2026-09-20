@@ -1,0 +1,428 @@
+#!/usr/bin/env python3
+"""Convert TrOCR VisionEncoderDecoderModel (safetensors) to GGUF — NO PyTorch required.
+
+Reads model.safetensors + config.json + tokenizer.json directly and
+packs into a single GGUF file for CrispEmbed's math OCR inference.
+
+Supports both:
+  - pix2tex-style (DeiT encoder + TrOCR decoder, small/base)
+  - microsoft/trocr-style (ViT encoder + TrOCR decoder, small/base/large)
+  - fhswf/TrOCR_Math_handwritten (ViT-Large + TrOCR-Large)
+
+Dependencies: safetensors, gguf, numpy (NO torch/transformers needed)
+
+Usage:
+    pip install safetensors gguf numpy
+    python convert-trocr-safetensors-to-gguf.py \\
+        --model-dir /path/to/model \\
+        --output /path/to/output.gguf [--fp16]
+"""
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+import gguf
+import numpy as np
+from safetensors import safe_open
+
+
+def main():
+    p = argparse.ArgumentParser(
+        description="Convert TrOCR safetensors to GGUF (torch-free)"
+    )
+    p.add_argument("--model-dir", required=True, help="Model directory")
+    p.add_argument("--output", required=True, help="Output GGUF path")
+    p.add_argument("--fp16", action="store_true", help="Store weights in FP16")
+    p.add_argument("--name", default=None, help="Model name for metadata")
+    p.add_argument("--image-mean", type=float, default=None,
+                   help="Grayscale input-normalization mean. Default: preprocessor_config.json "
+                        "image_mean[0] if present, else 0.5 (TrOCR/pix2tex). TexTeller: 0.9545467")
+    p.add_argument("--image-std", type=float, default=None,
+                   help="Grayscale input-normalization std. Default: preprocessor_config.json "
+                        "image_std[0] if present, else 0.5. TexTeller: 0.15394445")
+    p.add_argument("--preprocess", choices=["squash", "pad"], default=None,
+                   help="squash = resize to SxS ignoring aspect (TrOCR/pix2tex, default); "
+                        "pad = trim background border + aspect-preserving resize + white pad to SxS "
+                        "(TexTeller's torchvision transform)")
+    args = p.parse_args()
+
+    model_dir = Path(args.model_dir)
+
+    # ---- Load config ----
+    config_path = model_dir / "config.json"
+    if not config_path.exists():
+        print(f"Error: {config_path} not found", file=sys.stderr)
+        return 1
+
+    with open(config_path) as f:
+        config = json.load(f)
+
+    # generation_config.json is what HF generate() actually resolves
+    # decoder_start_token_id from — authoritative over config.json, which often
+    # leaves it unset at the top level (e.g. TrOCR: top-level None, but
+    # generation_config says 2). Reading only config.json wrongly fell back to
+    # bos=0 → the decoder started on the wrong token and emitted empty output.
+    gen_cfg = {}
+    gen_path = model_dir / "generation_config.json"
+    if gen_path.exists():
+        with open(gen_path) as f:
+            gen_cfg = json.load(f)
+
+    enc_cfg = config.get("encoder", config)
+    dec_cfg = config.get("decoder", config)
+
+    enc_layers = enc_cfg.get("num_hidden_layers", 12)
+    enc_heads = enc_cfg.get("num_attention_heads", 6)
+    enc_hidden = enc_cfg.get("hidden_size", 384)
+    enc_intermediate = enc_cfg.get("intermediate_size", 1536)
+    image_size = enc_cfg.get("image_size", 384)
+    patch_size = enc_cfg.get("patch_size", 16)
+
+    # ---- Input preprocessing (normalization + resize mode) ----
+    # Emitted so the engine reproduces the model's own transform. TrOCR/pix2tex
+    # ship a preprocessor_config.json (mean/std 0.5, squash-resize). TexTeller
+    # has NO preprocessor_config — its transform lives in source constants
+    # (mean 0.9545467, std 0.15394445, trim+aspect+white-pad) — pass those via
+    # --image-mean/--image-std/--preprocess pad.
+    pp = {}
+    pp_path = model_dir / "preprocessor_config.json"
+    if pp_path.exists():
+        with open(pp_path) as f:
+            pp = json.load(f)
+
+    def _scalar(v, default):
+        if isinstance(v, (list, tuple)) and v:
+            return float(v[0])
+        if isinstance(v, (int, float)):
+            return float(v)
+        return default
+
+    image_mean = args.image_mean if args.image_mean is not None else _scalar(pp.get("image_mean"), 0.5)
+    image_std = args.image_std if args.image_std is not None else _scalar(pp.get("image_std"), 0.5)
+    preprocess_pad = args.preprocess == "pad"  # default (None or "squash") → squash
+    print(f"Preprocess: mean={image_mean}, std={image_std}, mode={'pad' if preprocess_pad else 'squash'}")
+
+    dec_layers = dec_cfg.get("decoder_layers", 6)
+    dec_heads = dec_cfg.get("decoder_attention_heads", 8)
+    dec_d_model = dec_cfg.get("d_model", 256)
+    dec_ffn_dim = dec_cfg.get("decoder_ffn_dim", 1024)
+    vocab_size = dec_cfg.get("vocab_size", 50265)
+    max_seq_len = dec_cfg.get("max_position_embeddings", 512)
+    cross_attn_dim = dec_cfg.get("cross_attention_hidden_size") or enc_hidden
+
+    bos = dec_cfg.get("bos_token_id", 0)
+    eos = dec_cfg.get("eos_token_id", 2)
+    pad = dec_cfg.get("pad_token_id", 1)
+    # HF VisionEncoderDecoderModel.generate() resolves decoder_start_token_id from
+    # the TOP-LEVEL model config, falling back to bos_token_id — it IGNORES the
+    # nested decoder.decoder_start_token_id. That nested field is often a leftover
+    # EOS (=2) from the standalone decoder checkpoint; reading it breaks models
+    # like TexTeller whose top-level leaves it unset (correct start is bos=0, not
+    # 2 — a wrong start poisons the position-0 KV and the decode repeats/degenerates).
+    # Flat (non-nested) configs are unaffected: config is dec_cfg, so this reads
+    # the same field as before.
+    # Priority: generation_config (what generate() uses) → top-level config → bos.
+    dec_start = gen_cfg.get("decoder_start_token_id")
+    if dec_start is None:
+        dec_start = config.get("decoder_start_token_id")
+    if dec_start is None:
+        dec_start = config.get("bos_token_id", bos)
+    scale_embedding = dec_cfg.get("scale_embedding", True)
+    dec_activation = dec_cfg.get("activation_function", "relu")
+
+    print(f"Encoder: {enc_layers}L/{enc_heads}H/{enc_hidden}d, image={image_size}, patch={patch_size}")
+    print(f"Decoder: {dec_layers}L/{dec_heads}H/{dec_d_model}d, vocab={vocab_size}, ffn={dec_ffn_dim}")
+
+    # ---- Load tokenizer ----
+    tokens = []
+    tok_path = model_dir / "tokenizer.json"
+    if tok_path.exists():
+        with open(tok_path) as f:
+            tok = json.load(f)
+        vocab_map = tok.get("model", {}).get("vocab", {})
+        # Also include added_tokens from tokenizer.json
+        for at in tok.get("added_tokens", []):
+            vocab_map[at["content"]] = at["id"]
+        if vocab_map:
+            tokens = [""] * (max(vocab_map.values()) + 1)
+            for word, idx in vocab_map.items():
+                if idx < len(tokens):
+                    tokens[idx] = word
+            print(f"Tokenizer: {len(tokens)} tokens from tokenizer.json")
+    else:
+        # Try vocab.json
+        vocab_path = model_dir / "vocab.json"
+        if vocab_path.exists():
+            with open(vocab_path) as f:
+                vocab_map = json.load(f)
+            tokens = [""] * (max(vocab_map.values()) + 1)
+            for word, idx in vocab_map.items():
+                if idx < len(tokens):
+                    tokens[idx] = word
+            print(f"Tokenizer: {len(tokens)} tokens from vocab.json")
+
+    # TrOCR-small (XLM-R/RoBERTa) ships NO tokenizer.json/vocab.json — only
+    # tokenizer_config.json — so the id→string mapping must come from
+    # AutoTokenizer, which also handles the fairseq vocab offset. Without this
+    # the vocab stays empty and every generated token detokenizes to "" (empty
+    # OCR output despite a correct encoder + decoder).
+    if not any(tokens):
+        try:
+            from transformers import AutoTokenizer
+            tk = AutoTokenizer.from_pretrained(str(model_dir))
+            n = dec_cfg.get("vocab_size") or vocab_size or tk.vocab_size
+            tokens = [(tk.convert_ids_to_tokens(i) or f"<unk_{i}>") for i in range(n)]
+            print(f"Tokenizer: {len(tokens)} tokens via AutoTokenizer (XLM-R/SentencePiece)")
+        except Exception as e:
+            print(f"WARNING: AutoTokenizer fallback failed: {e}")
+
+    # Merge added_tokens.json (separate file, e.g. TexTeller Chinese chars)
+    added_tok_path = model_dir / "added_tokens.json"
+    if added_tok_path.exists():
+        with open(added_tok_path) as f:
+            added = json.load(f)
+        max_id = max(added.values()) if added else 0
+        if max_id >= len(tokens):
+            tokens.extend([""] * (max_id + 1 - len(tokens)))
+        for word, idx in added.items():
+            if idx < len(tokens):
+                tokens[idx] = word
+        print(f"  + {len(added)} added tokens (total {len(tokens)})")
+
+    # ---- Load safetensors weights ----
+    st_path = model_dir / "model.safetensors"
+    if not st_path.exists():
+        # Try pytorch_model.bin fallback
+        print(f"Error: {st_path} not found (pytorch_model.bin requires torch)", file=sys.stderr)
+        return 1
+
+    print(f"Loading weights from {st_path}...")
+    tensors = {}
+    with safe_open(str(st_path), framework="numpy") as f:
+        for key in f.keys():
+            tensors[key] = f.get_tensor(key)
+
+    print(f"Loaded {len(tensors)} tensors")
+
+    # ---- Squeeze batch dimensions and reshape conv weights ----
+    for key in list(tensors.keys()):
+        t = tensors[key]
+        # Squeeze leading batch dim: (1, N, D) → (N, D)
+        while t.ndim > 2 and t.shape[0] == 1 and 'projection.weight' not in key:
+            t = t.squeeze(0)
+            tensors[key] = t
+        # Conv weight (out, in, kH, kW) → (out, in*kH*kW) for linear matmul
+        if 'projection.weight' in key and t.ndim == 4:
+            out_c, in_c, kh, kw = t.shape
+            tensors[key] = t.reshape(out_c, in_c * kh * kw)
+            print(f"  Reshaped {key}: (out={out_c}, in={in_c}*{kh}*{kw}={in_c*kh*kw})")
+    # Skip the _float_tensor sentinel (not a real weight)
+    for key in list(tensors.keys()):
+        if key.endswith('._float_tensor'):
+            del tensors[key]
+
+    # Generate sinusoidal position embeddings if missing
+    # TrOCR models sometimes don't store embed_positions.weight in the
+    # checkpoint — they compute it at init time from a sinusoidal pattern.
+    dec_pos_key = None
+    for dp in ["decoder.model.decoder.embed_positions.weight", "decoder.embed_positions.weight"]:
+        if dp in tensors:
+            dec_pos_key = dp
+            break
+    if dec_pos_key is None:
+        print("  Generating sinusoidal decoder position embeddings...")
+        # TrOCR uses offset=2 for position embeddings
+        num_pos = max_seq_len + 2  # extra for offset
+        half_dim = dec_d_model // 2
+        pos_emb = np.zeros((num_pos, dec_d_model), dtype=np.float32)
+        positions = np.arange(num_pos)[:, np.newaxis]
+        dim_t = np.exp(np.arange(half_dim) * -(np.log(10000.0) / half_dim))
+        pos_emb[:, :half_dim] = np.sin(positions * dim_t)
+        pos_emb[:, half_dim:] = np.cos(positions * dim_t)
+        tensors["decoder.model.decoder.embed_positions.weight"] = pos_emb
+        print(f"  Generated ({num_pos}, {dec_d_model}) position embeddings")
+
+    # ---- Build name mapping ----
+    # HuggingFace keys → CrispEmbed GGUF keys
+    gguf_tensors = {}
+
+    def add(gguf_name, hf_name):
+        if hf_name in tensors:
+            gguf_tensors[gguf_name] = tensors[hf_name]
+        else:
+            # Try alternative prefixes
+            for prefix in ["encoder.", "decoder.model.decoder.", "decoder."]:
+                alt = prefix + hf_name
+                if alt in tensors:
+                    gguf_tensors[gguf_name] = tensors[alt]
+                    return
+            # Print warning for missing
+            pass
+
+    # Encoder embeddings
+    for hf_prefix in ["encoder.embeddings.", "encoder.deit.embeddings."]:
+        if f"{hf_prefix}cls_token" in tensors:
+            add("enc.embeddings.cls_token", f"{hf_prefix}cls_token")
+            add("enc.embeddings.patch_embeddings.projection.weight",
+                f"{hf_prefix}patch_embeddings.projection.weight")
+            add("enc.embeddings.patch_embeddings.projection.bias",
+                f"{hf_prefix}patch_embeddings.projection.bias")
+            add("enc.embeddings.position_embeddings",
+                f"{hf_prefix}position_embeddings")
+            # Distillation token (DeiT only)
+            if f"{hf_prefix}distillation_token" in tensors:
+                add("enc.embeddings.distillation_token",
+                    f"{hf_prefix}distillation_token")
+            break
+
+    # Encoder layers
+    for hf_layer_prefix in ["encoder.encoder.layer.", "encoder.deit.encoder.layer."]:
+        if f"{hf_layer_prefix}0.attention.attention.query.weight" in tensors:
+            for i in range(enc_layers):
+                lp = f"{hf_layer_prefix}{i}"
+                gp = f"enc.encoder.layer.{i}"
+                add(f"{gp}.layernorm_before.weight", f"{lp}.layernorm_before.weight")
+                add(f"{gp}.layernorm_before.bias", f"{lp}.layernorm_before.bias")
+                add(f"{gp}.attention.attention.query.weight", f"{lp}.attention.attention.query.weight")
+                add(f"{gp}.attention.attention.query.bias", f"{lp}.attention.attention.query.bias")
+                add(f"{gp}.attention.attention.key.weight", f"{lp}.attention.attention.key.weight")
+                add(f"{gp}.attention.attention.key.bias", f"{lp}.attention.attention.key.bias")
+                add(f"{gp}.attention.attention.value.weight", f"{lp}.attention.attention.value.weight")
+                add(f"{gp}.attention.attention.value.bias", f"{lp}.attention.attention.value.bias")
+                add(f"{gp}.attention.output.dense.weight", f"{lp}.attention.output.dense.weight")
+                add(f"{gp}.attention.output.dense.bias", f"{lp}.attention.output.dense.bias")
+                add(f"{gp}.layernorm_after.weight", f"{lp}.layernorm_after.weight")
+                add(f"{gp}.layernorm_after.bias", f"{lp}.layernorm_after.bias")
+                add(f"{gp}.intermediate.dense.weight", f"{lp}.intermediate.dense.weight")
+                add(f"{gp}.intermediate.dense.bias", f"{lp}.intermediate.dense.bias")
+                add(f"{gp}.output.dense.weight", f"{lp}.output.dense.weight")
+                add(f"{gp}.output.dense.bias", f"{lp}.output.dense.bias")
+            break
+
+    # Encoder final LayerNorm
+    for prefix in ["encoder.layernorm.", "encoder.deit.layernorm."]:
+        if f"{prefix}weight" in tensors:
+            add("enc.layernorm.weight", f"{prefix}weight")
+            add("enc.layernorm.bias", f"{prefix}bias")
+            break
+
+    # Decoder embeddings
+    for dp in ["decoder.model.decoder.", "decoder."]:
+        if f"{dp}embed_tokens.weight" in tensors:
+            add("dec.d.embed_tokens.weight", f"{dp}embed_tokens.weight")
+            add("dec.d.embed_positions.weight", f"{dp}embed_positions.weight")
+            add("dec.d.layernorm_embedding.weight", f"{dp}layernorm_embedding.weight")
+            add("dec.d.layernorm_embedding.bias", f"{dp}layernorm_embedding.bias")
+            add("dec.d.layer_norm.weight", f"{dp}layer_norm.weight")
+            add("dec.d.layer_norm.bias", f"{dp}layer_norm.bias")
+
+            # Decoder layers
+            for i in range(dec_layers):
+                lp = f"{dp}layers.{i}"
+                gp = f"dec.d.layers.{i}"
+                for suffix in [
+                    "self_attn_layer_norm.weight", "self_attn_layer_norm.bias",
+                    "self_attn.q_proj.weight", "self_attn.q_proj.bias",
+                    "self_attn.k_proj.weight", "self_attn.k_proj.bias",
+                    "self_attn.v_proj.weight", "self_attn.v_proj.bias",
+                    "self_attn.out_proj.weight", "self_attn.out_proj.bias",
+                    "encoder_attn_layer_norm.weight", "encoder_attn_layer_norm.bias",
+                    "encoder_attn.q_proj.weight", "encoder_attn.q_proj.bias",
+                    "encoder_attn.k_proj.weight", "encoder_attn.k_proj.bias",
+                    "encoder_attn.v_proj.weight", "encoder_attn.v_proj.bias",
+                    "encoder_attn.out_proj.weight", "encoder_attn.out_proj.bias",
+                    "final_layer_norm.weight", "final_layer_norm.bias",
+                    "fc1.weight", "fc1.bias",
+                    "fc2.weight", "fc2.bias",
+                ]:
+                    add(f"{gp}.{suffix}", f"{lp}.{suffix}")
+            break
+
+    # LM head
+    if "decoder.output_projection.weight" in tensors:
+        add("dec.lm_head.weight", "decoder.output_projection.weight")
+    elif "lm_head.weight" in tensors:
+        add("dec.lm_head.weight", "lm_head.weight")
+    # Bias (if present)
+    for key in ["decoder.output_projection.bias", "lm_head.bias"]:
+        if key in tensors:
+            add("dec.lm_head.bias", key)
+
+    print(f"Mapped {len(gguf_tensors)} tensors to GGUF names")
+
+    # ---- Weight matrix layout ----
+    # ggml_mul_mat(W, x) computes x @ W^T when W is [out_dim, in_dim].
+    # HuggingFace safetensors store weights as [out_dim, in_dim] — same
+    # convention as ggml. NO transpose needed (unlike ONNX models where
+    # the pix2tex converter transposes because ONNX uses [in, out]).
+    #
+    # NOTE: The pix2tex ONNX converter (convert-pix2tex-to-gguf.py)
+    # DOES transpose because ONNX MatMul uses the opposite convention.
+    # This safetensors converter does NOT transpose.
+
+    # ---- Write GGUF ----
+    print(f"Writing GGUF to {args.output}...")
+    writer = gguf.GGUFWriter(args.output, "math_ocr")
+
+    # Metadata
+    model_name = args.name or f"TrOCR Math OCR ({enc_layers}L enc + {dec_layers}L dec)"
+    writer.add_name(model_name)
+    writer.add_description("TrOCR VisionEncoderDecoderModel for math equation recognition")
+
+    # Hyperparameters
+    writer.add_uint32("encoder.num_hidden_layers", enc_layers)
+    writer.add_uint32("encoder.num_attention_heads", enc_heads)
+    writer.add_uint32("encoder.hidden_size", enc_hidden)
+    writer.add_uint32("encoder.intermediate_size", enc_intermediate)
+    writer.add_uint32("encoder.image_size", image_size)
+    writer.add_uint32("encoder.patch_size", patch_size)
+    writer.add_float32("encoder.image_mean", image_mean)
+    writer.add_float32("encoder.image_std", image_std)
+    writer.add_bool("encoder.preprocess_pad", preprocess_pad)
+    writer.add_uint32("decoder.decoder_layers", dec_layers)
+    writer.add_uint32("decoder.decoder_attention_heads", dec_heads)
+    writer.add_uint32("decoder.d_model", dec_d_model)
+    writer.add_uint32("decoder.decoder_ffn_dim", dec_ffn_dim)
+    writer.add_uint32("decoder.vocab_size", vocab_size)
+    writer.add_uint32("decoder.max_position_embeddings", max_seq_len)
+    writer.add_uint32("decoder.cross_attention_hidden_size", cross_attn_dim)
+    writer.add_uint32("decoder.bos_token_id", bos)
+    writer.add_uint32("decoder.eos_token_id", eos)
+    writer.add_uint32("decoder.pad_token_id", pad)
+    writer.add_uint32("decoder.decoder_start_token_id", dec_start)
+    writer.add_bool("decoder.scale_embedding", scale_embedding)
+    # Decoder FFN activation (model-dependent): pix2tex/TrOCR-small = relu,
+    # TexTeller = gelu. The engine hardcoded relu; carrying it here lets the
+    # engine pick gelu vs relu per model instead of silently corrupting the FFN.
+    writer.add_string("decoder.activation_function", dec_activation)
+
+    # Tokenizer — use the same key as pix2tex GGUF ("tokenizer.tokens")
+    # NOT add_token_list() which writes "tokenizer.ggml.tokens"
+    if tokens:
+        writer.add_array("tokenizer.tokens", tokens)
+
+    # License
+    writer.add_string("general.license", "AFL-3.0")
+
+    # Tensors
+    dtype = gguf.GGMLQuantizationType.F16 if args.fp16 else gguf.GGMLQuantizationType.F32
+    for name, data in sorted(gguf_tensors.items()):
+        if args.fp16 and data.dtype == np.float32:
+            data = data.astype(np.float16)
+        writer.add_tensor(name, data)
+
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+
+    import os
+    size_mb = os.path.getsize(args.output) / 1024 / 1024
+    print(f"Done! {args.output} ({size_mb:.0f} MB, {len(gguf_tensors)} tensors)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main() or 0)

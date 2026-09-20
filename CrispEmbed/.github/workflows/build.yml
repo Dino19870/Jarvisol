@@ -1,0 +1,278 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    # Documentation-only pushes must not start a build. Together with the
+    # cancel-in-progress group below, they did more than waste runners: a
+    # docs commit landing while a real build was in flight KILLED that build,
+    # and because GitHub's workflow badge reports the newest *completed* run
+    # and renders anything that is not `success` as "failing", a run of
+    # PLAN/HISTORY edits left the repo showing a red "Build failing" badge
+    # with nothing broken. (2026-08-06: six docs pushes in 30 minutes, three
+    # cancellations, while the last build that actually finished was green on
+    # all nine platform jobs.)
+    #
+    # An ignore-list, not an allow-list: this is the full cross-platform
+    # build and it must run for any code change, so listing what is safe to
+    # skip is the side that fails closed. Verified before adding: no .md is
+    # an input to the build or to the model-free tests below — the
+    # provenance tests assert that a string the CODE emits mentions
+    # POLICY.md, they never read the file.
+    #
+    # Deliberately not applied to `pull_request`: a required check that does
+    # not run can block a merge, and PR runs do not feed the badge anyway.
+    #
+    # Both markdown globs on purpose. GitHub matches these against the full
+    # path from the repo root, where `*` does not cross `/` and `**` does, so
+    # `'**.md'` should already cover root-level PLAN.md — "should" being a
+    # reading of the pattern spec, not something observed. `'*.md'` matches
+    # root-level markdown unambiguously, so listing both makes the filter
+    # correct either way instead of resting on the subtlety.
+    paths-ignore:
+      - '*.md'
+      - '**.md'
+      - 'docs/**'
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guards:
+    name: Static guards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test mains route through clean_exit
+        run: bash tools/check_test_clean_exit.sh
+      - name: Workflow toolchains are version-pinned
+        run: bash tools/check_workflow_pins.sh
+      - name: Pin guard self-test
+        run: bash tools/test_check_workflow_pins.sh
+
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            cmake_args: -DGGML_BLAS=OFF -DGGML_LLAMAFILE=ON
+            lib_name: libcrispembed.so
+          - name: macos-arm64
+            os: macos-latest
+            cmake_args: -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=Apple
+            lib_name: libcrispembed.dylib
+          - name: windows-x86_64
+            os: windows-latest
+            cmake_args: -DGGML_BLAS=OFF
+            lib_name: crispembed.dll
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCRISPEMBED_BUILD_SHARED=ON
+          ${{ matrix.cmake_args }}
+
+      - name: Build
+        run: cmake --build build --config Release -j4
+
+      - name: Smoke test (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          ./build/crispembed --help 2>&1 || true
+          ./build/test-backend-smoke
+
+      # Model-free correctness tests. They need no weights and no network, so
+      # they belong on every push rather than in the artifact-gated tiers.
+      # The provenance ones in particular guard claims we make in POLICY.md:
+      # that every emitted image is marked, that the marking is a structurally
+      # valid PNG chunk, and that we never assert wholly-synthetic media.
+      - name: Model-free tests (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cmake --build build --config Release -j4 \
+            --target test-image-provenance test-provenance-marking test-msac-tiling test-temp-file test-render-provenance \
+                     test-qwen-pretokenize test-o200k-pretokenize test-bpe-pretokenize test-bert-pretokenize \
+                     test-bert-norm test-spm-norm test-imatrix-alias test-no-repeat-ngram test-env-gate
+          ./build/test-image-provenance
+          ./build/test-provenance-marking
+          ./build/test-msac-tiling
+          ./build/test-temp-file
+          ./build/test-render-provenance
+          ./build/test-qwen-pretokenize
+          ./build/test-o200k-pretokenize
+          ./build/test-bpe-pretokenize
+          ./build/test-bert-pretokenize
+          ./build/test-bert-norm
+          ./build/test-spm-norm
+          ./build/test-imatrix-alias
+          ./build/test-no-repeat-ngram
+          ./build/test-env-gate
+          python3 tests/test_vendored_kaggle_harness.py
+
+      - name: Smoke test (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          $runtimeDirs = @(
+            "$PWD\build\Release",
+            "$PWD\build\bin\Release",
+            "$PWD\build\bin"
+          )
+          $env:PATH = ($runtimeDirs -join ';') + ';' + $env:PATH
+          & .\build\Release\crispembed.exe --help
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "crispembed --help exited with $LASTEXITCODE (ignored)"
+          }
+          & .\build\Release\test-backend-smoke.exe cpu --json
+          exit $LASTEXITCODE
+        shell: pwsh
+
+      - name: Smoke test (explicit Metal)
+        if: runner.os == 'macOS'
+        run: ./build/test-backend-smoke metal
+
+      # Install into a staging prefix so the shared library is bundled with its
+      # ggml runtime dylibs/sos and rewritten to a relocatable @loader_path /
+      # $ORIGIN rpath. The build-tree library bakes in absolute runner paths and
+      # ships without ggml, so it can't load on a consumer machine — the install
+      # tree can. lib/ holds *.so / *.dylib; bin/ holds *.dll (Windows).
+      - name: Install (bundle native libs)
+        run: cmake --install build --config Release --prefix dist
+
+      - name: Upload shared library bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: |
+            dist/lib/
+            dist/bin/
+          if-no-files-found: warn
+
+  build-android:
+    name: android-${{ matrix.abi }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a, x86_64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=${{ matrix.abi }} \
+            -DANDROID_NATIVE_API_LEVEL=24 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCRISPEMBED_BUILD_SHARED=ON \
+            -DGGML_LLAMAFILE=OFF
+          cmake --build build -j4
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-${{ matrix.abi }}
+          path: build/libcrispembed.so
+          if-no-files-found: warn
+
+  build-ios:
+    name: ios-arm64
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build
+        run: |
+          # Use Unix Makefiles (not Xcode) to avoid MACOSX_BUNDLE issues
+          cmake -S . -B build \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_SYSROOT=$(xcrun --sdk iphoneos --show-sdk-path) \
+            -DCMAKE_C_COMPILER=$(xcrun --sdk iphoneos -f clang) \
+            -DCMAKE_CXX_COMPILER=$(xcrun --sdk iphoneos -f clang++) \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCRISPEMBED_BUILD_SHARED=OFF \
+            -DGGML_METAL=ON \
+            -DGGML_METAL_EMBED_LIBRARY=ON
+          cmake --build build -j4
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-arm64
+          path: build/libcrispembed-static.a
+          if-no-files-found: warn
+
+  # -------------------------------------------------------------------------
+  # Bundle all native libraries into the Flutter plugin's platform directories
+  # so that `flutter build` can find them.
+  # -------------------------------------------------------------------------
+  bundle-flutter:
+    name: Bundle Flutter plugin
+    runs-on: ubuntu-latest
+    needs: [build, build-android, build-ios]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Place artifacts in Flutter plugin dirs
+        run: |
+          set +e  # don't abort on missing artifacts
+          PLUGIN=flutter/crispembed
+
+          # Desktop artifacts are now self-contained install bundles: the shared
+          # library plus its ggml runtime libs live under lib/ (Unix) or bin/
+          # (Windows). Copy the whole set so the plugin ships every dependency.
+
+          # Linux (lib/*.so + ggml *.so siblings)
+          cp artifacts/linux-x86_64/lib/*.so* \
+             $PLUGIN/linux/lib/ 2>/dev/null || echo "SKIP: linux"
+
+          # macOS (lib/*.dylib + ggml *.dylib siblings)
+          cp artifacts/macos-arm64/lib/*.dylib \
+             $PLUGIN/macos/Libs/ 2>/dev/null || echo "SKIP: macos"
+
+          # Windows (bin/*.dll: crispembed.dll + ggml DLLs)
+          cp artifacts/windows-x86_64/bin/*.dll \
+             $PLUGIN/windows/lib/ 2>/dev/null || echo "SKIP: windows"
+
+          # iOS
+          cp artifacts/ios-arm64/libcrispembed-static.a \
+             $PLUGIN/ios/Libs/libcrispembed-static.a 2>/dev/null || echo "SKIP: ios"
+
+          # Android (per-ABI)
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            cp artifacts/android-${abi}/libcrispembed.so \
+               $PLUGIN/android/src/main/jniLibs/${abi}/libcrispembed.so 2>/dev/null || echo "SKIP: android-${abi}"
+          done
+
+          echo "=== Flutter plugin native libraries ==="
+          find $PLUGIN -name '*.so' -o -name '*.dylib' -o -name '*.dll' -o -name '*.a' | sort
+
+      - name: Upload bundled plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: flutter-plugin-bundled
+          path: flutter/crispembed/

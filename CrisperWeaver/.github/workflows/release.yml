@@ -1,0 +1,1431 @@
+name: Release
+
+# Triggered by pushing a tag like `v1.2.3`. Builds release artifacts and
+# attaches them to the matching GitHub Release. The Release itself is
+# auto-created if it doesn't already exist.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g. v0.9.5). Must be an existing v* tag."
+        # REQUIRED. When this was optional, dispatching without it made
+        # `inputs.tag || github.ref_name` fall back to the BRANCH name, and
+        # action-gh-release happily created a release tagged `main` with
+        # full artefacts (2026-07-10). That also left a `main` tag on the
+        # remote, which makes `git push origin main` fail with
+        # "src refspec main matches more than one".
+        required: true
+
+# Single static concurrency group across every release run, including
+# different tags. Pushing v0.6.38 while v0.6.37 is still building
+# cancels v0.6.37's in-flight jobs — only the newest tag's artefacts
+# get attached to GitHub Releases. This matches the rapid-iteration
+# workflow where intermediate-tag .app.zip / .apk / .ipa bundles would
+# just be wasted runner time; the user only needs the latest.
+#
+# If you ever need ALL tags' artefacts (e.g. shipping a hotfix branch
+# in parallel with main's latest), either rename the group locally
+# in a one-off branch or push the older tag once the newer release
+# has finished.
+concurrency:
+  group: release
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: "3.44.1"
+  # Pinned to release tags rather than `main` for reproducible builds.
+  #
+  # These are shared clones that parallel workers rebuild, and the drift
+  # is not hypothetical: on 2026-08-01 a `main` pin put the app 13
+  # backends behind the engine and broke the build outright when
+  # CrispasrSpeakerDB gained a required consent argument (PLAN §15.1a,
+  # §15.7). Worse, one of those backends appeared while CrispASR's git
+  # HEAD was UNCHANGED — a worker had rebuilt the dylib — so pinning the
+  # ref is necessary but not sufficient; it bounds the source, not the
+  # artefact.
+  #
+  # Bumping: raise the tag, run `flutter analyze` + the full test suite
+  # (backend_dispatch_test is the drift canary), catalogue any new
+  # backends or add them to its documented `engineOnly` set, then commit
+  # the bump on its own so a regression bisects cleanly.
+  CRISPASR_REPO: CrispStrobe/CrispASR
+  CRISPASR_REF: v0.8.25
+  CRISPEMBED_REPO: CrispStrobe/CrispEmbed
+  CRISPEMBED_REF: v0.17.3
+  GLINT_REPO: CrispStrobe/glint
+  # NB glint uses a per-package tag scheme; the bare `vX.Y.Z` tags are a
+  # stale legacy series (v0.9.0 still carries Dart package 0.1.0).
+  GLINT_REF: glint_audio-v0.11.0
+
+jobs:
+  # Fail fast rather than publishing a release under a branch name. Belt
+  # and braces alongside the required input above: this also catches an
+  # explicit dispatch with a bad tag, or a future trigger change.
+  validate-tag:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - id: resolve
+        shell: bash
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          echo "resolved tag: $TAG"
+          case "$TAG" in
+            v*) ;;
+            *)
+              echo "::error::Refusing to release '$TAG' — release tags must match v* ." \
+                   "A branch name here means the tag input was omitted and github.ref_name" \
+                   "leaked through, which is how the stray 'main' release was created."
+              exit 1
+              ;;
+          esac
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  build-macos:
+    name: macOS (.app.zip)
+    needs: validate-tag
+    runs-on: macos-latest
+    # CrispASR grew large enough (Zonos, TADA-TTS, …) that an unbounded
+    # `--parallel` build OOM-killed the 7 GB M1 runner mid-compile (exit 143
+    # in v0.7.6). Bound the build below + give the job explicit headroom.
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - name: Check out CrisperWeaver
+        uses: actions/checkout@v5
+        with:
+          path: repos/CrisperWeaver
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Check out sibling CrispASR
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.CRISPASR_REPO }}
+          ref: ${{ env.CRISPASR_REF }}
+          path: repos/CrispASR
+          submodules: recursive
+
+      - name: Check out sibling CrispEmbed
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.CRISPEMBED_REPO }}
+          ref: ${{ env.CRISPEMBED_REF }}
+          path: repos/CrispEmbed
+          submodules: recursive
+
+      - name: Check out sibling glint
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.GLINT_REPO }}
+          ref: ${{ env.GLINT_REF }}
+          path: repos/glint
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Build libwhisper.dylib (Release + Metal)
+        working-directory: repos/CrispASR
+        run: |
+          # WITH_ESPEAK_NG=AUTO → kokoro/piper dlopen espeak at runtime (not
+          # linked), so libwhisper.dylib carries no espeak dependency and the
+          # .app ships GPL-free (App-Store-safe). We deliberately do NOT
+          # `brew install espeak-ng` so CMake can't find + link it. Built-in
+          # G2P covers EN/DE/FR/ES; a user can add their own libespeak-ng.
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=ON -DWHISPER_METAL=ON \
+            -DCRISPASR_WITH_ESPEAK_NG=AUTO \
+            -DCRISPASR_OPUS_FETCH=ON
+          # --parallel 2 (not unbounded): caps peak RAM so the heavier
+          # CrispASR build doesn't get OOM-killed on the 7 GB M1 runner.
+          cmake --build build --config Release --parallel 2 --target crispasr-lib
+          ls -lh build/src/libwhisper*.dylib
+
+      - name: Build libglint.dylib (codec suite)
+        working-directory: repos/glint
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release --parallel 2 --target glint_shared
+          ls -lh build/libglint.dylib
+
+      - name: Pub get
+        working-directory: repos/CrisperWeaver
+        run: flutter pub get
+
+      - name: Generate build info (git hash + timestamp)
+        working-directory: repos/CrisperWeaver
+        run: bash scripts/gen_build_info.sh
+
+      - name: Refresh baked models catalogue
+        working-directory: repos/CrisperWeaver
+        # Re-bake `lib/services/baked_models_catalog.dart` from the live
+        # HF API so every release ships with a current snapshot — without
+        # this the Models screen would either wait on the live probe at
+        # first launch OR show stale catalog entries. ~30 s + 30 HTTP
+        # requests; failures don't gate the build (the committed snapshot
+        # is the floor).
+        run: timeout 120 dart run scripts/bake_models_catalog.dart || true
+
+      - name: Build macOS (Release)
+        working-directory: repos/CrisperWeaver
+        run: flutter build macos --release
+
+      - name: Bundle all CrispASR + glint dylibs + ad-hoc sign
+        working-directory: repos/CrisperWeaver
+        run: |
+          CRISPASR_DIR="$GITHUB_WORKSPACE/repos/CrispASR" \
+            GLINT_DIR="$GITHUB_WORKSPACE/repos/glint" \
+            APP=build/macos/Build/Products/Release/crisper_weaver.app \
+            ./scripts/bundle_macos_dylibs.sh
+
+      - name: Zip .app
+        working-directory: repos/CrisperWeaver/build/macos/Build/Products/Release
+        run: |
+          ditto -c -k --keepParent crisper_weaver.app crisper_weaver-macos.zip
+          shasum -a 256 crisper_weaver-macos.zip | tee crisper_weaver-macos.zip.sha256
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          files: |
+            repos/CrisperWeaver/build/macos/Build/Products/Release/crisper_weaver-macos.zip
+            repos/CrisperWeaver/build/macos/Build/Products/Release/crisper_weaver-macos.zip.sha256
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
+
+  # Mac App Store / TestFlight build.
+  #
+  # Separate from build-macos on purpose: that job ships a NOT-sandboxed
+  # .app for direct download, which sets disable-library-validation so a
+  # user can drop their own libwhisper.dylib beside it. The App Store
+  # forbids both, so the two are different products built from one source
+  # and they cannot share a signing pass. See scripts/build_macos_appstore.sh.
+  #
+  # continue-on-error while this path is young: a signing or validation
+  # hiccup must not fail a release whose other five artefacts are fine.
+  build-macos-appstore:
+    name: macOS (App Store .pkg)
+    needs: validate-tag
+    runs-on: macos-latest
+    timeout-minutes: 120
+    continue-on-error: true
+    permissions:
+      contents: write
+    steps:
+      - name: Check out CrisperWeaver
+        uses: actions/checkout@v5
+        with:
+          path: repos/CrisperWeaver
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Check out sibling CrispASR
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.CRISPASR_REPO }}
+          ref: ${{ env.CRISPASR_REF }}
+          path: repos/CrispASR
+          submodules: recursive
+
+      - name: Check out sibling CrispEmbed
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.CRISPEMBED_REPO }}
+          ref: ${{ env.CRISPEMBED_REF }}
+          path: repos/CrispEmbed
+          submodules: recursive
+
+      - name: Check out sibling glint
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.GLINT_REPO }}
+          ref: ${{ env.GLINT_REF }}
+          path: repos/glint
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Pub get
+        working-directory: repos/CrisperWeaver
+        run: flutter pub get
+
+      - name: Generate build info (git hash + timestamp)
+        working-directory: repos/CrisperWeaver
+        run: bash scripts/gen_build_info.sh
+
+      - name: Refresh baked models catalogue
+        working-directory: repos/CrisperWeaver
+        run: timeout 120 dart run scripts/bake_models_catalog.dart || true
+
+      # A dedicated keychain, never login.keychain — the runner has no
+      # human to click through an export prompt.
+      - name: Install signing credentials
+        id: signing
+        env:
+          MAC_DIST_P12: ${{ secrets.MAC_DIST_P12 }}
+          MAC_DIST_P12_PASSWORD: ${{ secrets.MAC_DIST_P12_PASSWORD }}
+          MAC_PROFILE_BASE64: ${{ secrets.MAC_PROFILE_BASE64 }}
+        run: |
+          if [ -z "$MAC_DIST_P12" ] || [ -z "$MAC_PROFILE_BASE64" ]; then
+            echo "signing_ready=false" >> "$GITHUB_OUTPUT"
+            echo "macOS App Store secrets absent - skipping signed build"
+            exit 0
+          fi
+          KEYCHAIN="$RUNNER_TEMP/mac-appstore.keychain-db"
+          security create-keychain -p ci "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p ci "$KEYCHAIN"
+          echo "$MAC_DIST_P12" | base64 --decode > "$RUNNER_TEMP/mac_dist.p12"
+          security import "$RUNNER_TEMP/mac_dist.p12" -k "$KEYCHAIN" \
+            -P "$MAC_DIST_P12_PASSWORD" -A -t cert -f pkcs12
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k ci "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" \
+            $(security list-keychains -d user | tr -d '"')
+          mkdir -p "$RUNNER_TEMP/profiles"
+          echo "$MAC_PROFILE_BASE64" | base64 --decode \
+            > "$RUNNER_TEMP/profiles/CrisperWeaver_MacAppStore.provisionprofile"
+          security find-identity -v -p codesigning "$KEYCHAIN"
+          echo "signing_ready=true" >> "$GITHUB_OUTPUT"
+
+      # altool resolves `--apiKey <id>` by NAME: it looks for
+      # AuthKey_<id>.p8 under ~/.appstoreconnect/private_keys (plus three
+      # sibling paths) and aborts with "Failed to load AuthKey file. (-43)"
+      # when it isn't there. Only build-ios materialised that file, so this
+      # job built and signed a perfectly good .pkg and then failed at
+      # validation on every release — invisible from the outside because the
+      # job is continue-on-error and the .pkg still got attached. Same
+      # decode-then-fallback handling as build-ios; keep the key id in step
+      # with API_KEY in scripts/build_macos_appstore.sh.
+      - name: Install App Store Connect API key
+        if: steps.signing.outputs.signing_ready == 'true'
+        env:
+          APPSTORE_API_KEY_P8: ${{ secrets.APPSTORE_API_KEY_P8 }}
+        run: |
+          if [ -z "$APPSTORE_API_KEY_P8" ]; then
+            echo "::warning::APPSTORE_API_KEY_P8 is unset — App Store validation/upload will fail. The .pkg is still built and attached."
+            exit 0
+          fi
+          mkdir -p ~/.appstoreconnect/private_keys ~/.private_keys
+          KEY=~/.appstoreconnect/private_keys/AuthKey_9RMU3C7422.p8
+          # CrisperWeaver stores this secret as RAW PEM (appstore.md's secret
+          # table), other repos store base64 — try decode, fall back to raw.
+          echo "$APPSTORE_API_KEY_P8" | base64 --decode > "$KEY" 2>/dev/null || true
+          if ! head -1 "$KEY" | grep -q "BEGIN PRIVATE KEY"; then
+            printf '%s' "$APPSTORE_API_KEY_P8" > "$KEY"
+          fi
+          if head -1 "$KEY" | grep -q "BEGIN PRIVATE KEY"; then
+            chmod 600 "$KEY"
+            # Written to two of altool's four search paths: build-ios uses
+            # ~/.appstoreconnect/private_keys and that works, but appstore.md
+            # calls ~/.private_keys "the safe one to write". Costs nothing to
+            # satisfy both and removes a runner-dependent failure mode.
+            cp "$KEY" ~/.private_keys/AuthKey_9RMU3C7422.p8
+            chmod 600 ~/.private_keys/AuthKey_9RMU3C7422.p8
+            echo "App Store Connect API key installed (.appstoreconnect + .private_keys)"
+          else
+            rm -f "$KEY"
+            echo "::warning::APPSTORE_API_KEY_P8 is not a valid .p8 (neither base64 nor raw PEM) — App Store validation/upload will fail. Re-set the secret per ../appstore.md."
+          fi
+
+      - name: Build, sign and package for the App Store
+        if: steps.signing.outputs.signing_ready == 'true'
+        working-directory: repos/CrisperWeaver
+        env:
+          MAC_PROFILE: ${{ runner.temp }}/profiles/CrisperWeaver_MacAppStore.provisionprofile
+          APPSTORE_APP_ID: ${{ secrets.APPSTORE_APP_ID }}
+          # The script defaults to the maintainer's exportable
+          # brickwright-build keychain; on a runner that does not exist, so
+          # point it at the throwaway keychain created above. Never the
+          # runner's login keychain.
+          SIGN_KEYCHAIN: ${{ runner.temp }}/mac-appstore.keychain-db
+        run: bash scripts/build_macos_appstore.sh --upload
+
+      - name: Upload .pkg to GitHub Release
+        if: always() && steps.signing.outputs.signing_ready == 'true'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          files: repos/CrisperWeaver/crisper_weaver-macos-appstore.pkg
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: false
+
+  build-linux:
+    name: Linux (.tar.gz bundle)
+    needs: validate-tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out CrisperWeaver
+        uses: actions/checkout@v5
+        with:
+          path: repos/CrisperWeaver
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Check out sibling CrispASR
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.CRISPASR_REPO }}
+          ref: ${{ env.CRISPASR_REF }}
+          path: repos/CrispASR
+          submodules: recursive
+
+      - name: Check out sibling CrispEmbed
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.CRISPEMBED_REPO }}
+          ref: ${{ env.CRISPEMBED_REF }}
+          path: repos/CrispEmbed
+          submodules: recursive
+
+      - name: Check out sibling glint
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.GLINT_REPO }}
+          ref: ${{ env.GLINT_REF }}
+          path: repos/glint
+
+      - name: Install Linux desktop toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang cmake ninja-build pkg-config \
+            libgtk-3-dev liblzma-dev libstdc++-12-dev \
+            libsecret-1-dev libjsoncpp-dev libglu1-mesa \
+            libkeybinder-3.0-dev libayatana-appindicator3-dev \
+            libespeak-ng-dev espeak-ng-data
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Build libcrispasr.so (Release, all-in-one)
+        working-directory: repos/CrispASR
+        run: |
+          # Build static with PIC, then re-link as a single shared lib
+          # with ggml + all backends baked in. No separate ggml .so's needed.
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCRISPASR_BUILD_EXAMPLES=OFF -DCRISPASR_BUILD_TESTS=OFF \
+            -DCRISPASR_OPUS_FETCH=ON \
+            -DCRISPASR_WITH_ESPEAK_NG=AUTO
+          # --parallel 2 (not unbounded): caps peak RAM so the heavy
+          # CrispASR compile doesn't get OOM-killed (exit 143) on the
+          # runner — same guard the macOS job uses.
+          cmake --build build --config Release --parallel 2 --target crispasr-lib
+          cd build
+          # WITH_ESPEAK_NG=AUTO → kokoro/piper dlopen espeak at runtime (not
+          # linked), so libcrispasr.so carries no espeak NEEDED entry and the
+          # app ships GPL-free. $ORIGIN rpath is still handy so a user who
+          # drops their own libespeak-ng.so into <bundle>/lib/ gets picked up.
+          gcc -shared -o src/libcrispasr.so \
+            -Wl,-rpath,'$ORIGIN' \
+            -Wl,--whole-archive \
+            src/libcrispasr.a \
+            $(find . -name "lib*.a" ! -name "libcrispasr.a" ! -name "libCatch*" ! -name "libcommon*" -printf "%p ") \
+            -Wl,--no-whole-archive \
+            -lstdc++ -lm -lpthread -fopenmp
+          ln -sf libcrispasr.so src/libwhisper.so
+          ls -lh src/libcrispasr.so
+          nm -D src/libcrispasr.so | grep -c "T " | xargs printf "  %d exported symbols\n"
+          # Verify opus decode symbols (#26)
+          SYMS=$(nm -D src/libcrispasr.so)
+          for sym in opus_decode_float opus_decoder_create op_open_file crispasr_audio_load whisper_full; do
+            if ! echo "$SYMS" | grep -q "$sym"; then
+              echo "::error::libcrispasr.so missing symbol: $sym" >&2
+              exit 1
+            fi
+          done
+          echo "  ✓ opus + core symbols verified"
+
+      - name: Build libglint.so (codec suite)
+        working-directory: repos/glint
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release --parallel --target glint_shared
+          ls -lh build/libglint.so
+
+      - name: Enable Linux desktop + pub get
+        working-directory: repos/CrisperWeaver
+        run: |
+          flutter config --enable-linux-desktop
+          flutter pub get
+
+      - name: Generate build info (git hash + timestamp)
+        working-directory: repos/CrisperWeaver
+        run: bash scripts/gen_build_info.sh
+
+      - name: Refresh baked models catalogue
+        working-directory: repos/CrisperWeaver
+        run: timeout 120 dart run scripts/bake_models_catalog.dart || true
+
+      - name: Build Linux (Release)
+        working-directory: repos/CrisperWeaver
+        run: flutter build linux --release
+
+      - name: Bundle libcrispasr.so + libglint into bundle/lib/
+        working-directory: repos/CrisperWeaver
+        run: |
+          BUNDLE=build/linux/x64/release/bundle
+          mkdir -p "$BUNDLE/lib"
+          # Single self-contained shared lib (ggml + all backends linked in)
+          cp ../CrispASR/build/src/libcrispasr.so "$BUNDLE/lib/libwhisper.so"
+          ln -sf libwhisper.so "$BUNDLE/lib/libcrispasr.so"
+          # glint codec (MP3/AAC/Opus) — self-contained, drop beside libwhisper.
+          cp ../glint/build/libglint.so "$BUNDLE/lib/libglint.so"
+          # espeak-ng (GPL-3.0) is deliberately NOT bundled — built AUTO
+          # (dlopen), so kokoro/piper use the built-in non-GPL G2P. A user who
+          # wants espeak can drop libespeak-ng.so + espeak-ng-data into
+          # <bundle>/lib/ ($ORIGIN rpath) themselves (their GPL binary).
+          ls -lh "$BUNDLE/lib/libwhisper.so"
+          # Verify key symbols are present
+          nm -D "$BUNDLE/lib/libwhisper.so" | grep -q ggml_siglu_swapped && echo "OK: ggml_siglu_swapped exported" || echo "WARN: ggml_siglu_swapped missing!"
+          nm -D "$BUNDLE/lib/libwhisper.so" | grep -q crispasr_session_available_backends && echo "OK: available_backends exported" || echo "WARN: available_backends missing!"
+          # Confirm kokoro's in-process phonemizer landed (means
+          # CMake found libespeak-ng at build time).
+          if nm -D "$BUNDLE/lib/libwhisper.so" | grep -q kokoro_phonemize_text_lib; then
+            echo "OK: kokoro_phonemize_text_lib exported (in-process espeak)"
+          else
+            echo "WARN: kokoro_phonemize_text_lib missing — kokoro will fall back to popen(espeak-ng)" >&2
+          fi
+
+      - name: Tarball
+        working-directory: repos/CrisperWeaver/build/linux/x64/release
+        run: |
+          mv bundle crisper_weaver
+          tar -czf crisper_weaver-linux-x64.tar.gz crisper_weaver
+          sha256sum crisper_weaver-linux-x64.tar.gz | tee crisper_weaver-linux-x64.tar.gz.sha256
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          files: |
+            repos/CrisperWeaver/build/linux/x64/release/crisper_weaver-linux-x64.tar.gz
+            repos/CrisperWeaver/build/linux/x64/release/crisper_weaver-linux-x64.tar.gz.sha256
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
+
+  build-android:
+    name: Android APK (real ASR, arm64)
+    needs: validate-tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out CrisperWeaver
+        uses: actions/checkout@v5
+        with:
+          path: repos/CrisperWeaver
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Check out sibling CrispASR
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.CRISPASR_REPO }}
+          ref: ${{ env.CRISPASR_REF }}
+          path: repos/CrispASR
+          submodules: recursive
+
+      - name: Check out sibling CrispEmbed
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.CRISPEMBED_REPO }}
+          ref: ${{ env.CRISPEMBED_REF }}
+          path: repos/CrispEmbed
+          submodules: recursive
+
+      - name: Check out sibling glint
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.GLINT_REPO }}
+          ref: ${{ env.GLINT_REF }}
+          path: repos/glint
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK + NDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install NDK 26
+        run: |
+          sdkmanager --install "ndk;26.3.11579264" >/dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.3.11579264" >> $GITHUB_ENV
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      # Cross-compile espeak-ng for arm64-android. Two-step build:
+      #   1. native (host linux-x86_64) — produces the `espeak-ng`
+      #      binary that espeak-ng's CMake uses to generate
+      #      espeak-ng-data/ (the runtime phoneme tables).
+      #   2. arm64-android — static lib for linking into libcrispasr.so.
+      # Without this, kokoro on Android can't phonemize → synthesize
+      # returns no audio (#6 root cause on Android). Result paths:
+      #   $ESPEAK_NG_NATIVE_ROOT  — host install + espeak-ng-data/
+      #   $ESPEAK_NG_ANDROID_ROOT — arm64 static .a + headers
+      - name: Build espeak-ng for arm64-android (kokoro phonemizer)
+        env:
+          # `1.52.0` (the latest tag) doesn't have the
+          # `if (CMAKE_CROSSCOMPILING) { find_program NATIVEBUILD }`
+          # branch needed to pick up the native binary for data
+          # generation — it unconditionally invokes
+          # $<TARGET_FILE:espeak-ng-bin> in cmake/data.cmake, which
+          # is the cross-compiled arm64 binary and fails at build
+          # time with "Syntax error: Unterminated quoted string"
+          # (it's an ELF, not a shell script). master branch added
+          # the cross-compile bypass; pin to a known-good HEAD here.
+          ESPEAK_NG_REF: "master"
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake libtool pkg-config
+          git clone --depth=1 --branch "$ESPEAK_NG_REF" \
+            https://github.com/espeak-ng/espeak-ng.git espeak-ng-src
+          cd espeak-ng-src
+          # Step 1 — native build for the data-generation binary.
+          # Notes:
+          #  * Target is `espeak-ng-bin` (OUTPUT_NAME espeak-ng) —
+          #    `--target espeak-ng` matches a phony rule that builds
+          #    the data tree only.
+          #  * Disable ESPEAK_COMPAT so the install step doesn't try
+          #    to copy the speak-ng / espeak / speak compat symlinks
+          #    (they're created by a separate ALL custom target that
+          #    `--target espeak-ng-bin` doesn't drag in).
+          # COMPILE_INTONATIONS=ON (the default) is what produces
+          # the espeak-ng-data/ tree we ship as a Flutter asset.
+          # ESPEAK_COMPILE_PHONEME_DATA isn't a real option — drop it.
+          cmake -S . -B build-native \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DESPEAK_COMPAT=OFF \
+            -DUSE_ASYNC=OFF -DUSE_MBROLA=OFF -DUSE_KLATT=OFF \
+            -DUSE_LIBPCAUDIO=OFF -DUSE_LIBSONIC=OFF \
+            -DENABLE_TESTS=OFF \
+            -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/espeak-ng-native"
+          # Two-step build: first the executable so it exists, then
+          # `data` (the ALL custom target in cmake/data.cmake) which
+          # runs espeak-ng to actually compile phontab / phondata /
+          # phonindex / *_dict / intonations into share/espeak-ng-data/.
+          # Without the `data` step, `cmake --install` only copies the
+          # source-controlled lang/ + voices/!v subdirs and the
+          # espeak-ng-data we bundle as a Flutter asset is missing all
+          # the compiled phoneme tables — kokoro_synthesize then
+          # returns no PCM at first call (#6 Android root cause).
+          cmake --build build-native --parallel --target espeak-ng-bin
+          cmake --build build-native --parallel --target data
+          cmake --install build-native
+          ESPEAK_NG_NATIVE_ROOT="$GITHUB_WORKSPACE/espeak-ng-native"
+          echo "ESPEAK_NG_NATIVE_ROOT=$ESPEAK_NG_NATIVE_ROOT" >> $GITHUB_ENV
+          # Step 2 — cross-compile static lib for arm64-android using the
+          # native binary for intonations data gen.
+          NDK_TC="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
+          # Cross-build just needs libespeak-ng.a for linking into
+          # libcrispasr.so. COMPILE_INTONATIONS=OFF skips the
+          # data-regeneration custom commands entirely (we ship the
+          # native build's intonations file as part of the Flutter
+          # asset bundle, so no need to recreate them here).
+          cmake -S . -B build-android \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK_TC" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_NATIVE_API_LEVEL=24 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DUSE_ASYNC=OFF -DUSE_MBROLA=OFF -DUSE_KLATT=OFF \
+            -DUSE_LIBPCAUDIO=OFF -DUSE_LIBSONIC=OFF \
+            -DCOMPILE_INTONATIONS=OFF \
+            -DESPEAK_COMPAT=OFF \
+            -DENABLE_TESTS=OFF \
+            -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/espeak-ng-android"
+          cmake --build build-android --parallel
+          cmake --install build-android
+          ESPEAK_NG_ANDROID_ROOT="$GITHUB_WORKSPACE/espeak-ng-android"
+          echo "ESPEAK_NG_ANDROID_ROOT=$ESPEAK_NG_ANDROID_ROOT" >> $GITHUB_ENV
+          echo "=== android espeak-ng install layout ==="
+          find "$ESPEAK_NG_ANDROID_ROOT" -maxdepth 3 \( -name '*.a' -o -name '*.h' \) | head -20
+
+      # Cross-build a single all-in-one libcrispasr.so for Android arm64.
+      # Same approach as Linux: static build with PIC, then re-link as
+      # one shared lib with all ggml + backend symbols baked in.
+      - name: Cross-build libcrispasr.so for Android arm64 (all-in-one)
+        working-directory: repos/CrispASR
+        env:
+          NDK_TC: ${{ env.ANDROID_NDK_HOME }}/build/cmake/android.toolchain.cmake
+        run: |
+          # Compute ESPEAK_NG_INCLUDE_DIR + LIBRARY so CrispASR's kokoro
+          # CMake snippet (src/CMakeLists.txt around L949-L991) hits the
+          # cross-compiled static lib and sets CRISPASR_HAVE_ESPEAK_NG=1.
+          ESPEAK_INC=$(find "$ESPEAK_NG_ANDROID_ROOT" -maxdepth 4 -type d -name 'espeak-ng' -path '*/include/*' | head -1)
+          ESPEAK_INC="${ESPEAK_INC%/espeak-ng}"
+          ESPEAK_LIB=$(find "$ESPEAK_NG_ANDROID_ROOT" -name 'libespeak-ng.a' | head -1)
+          # libucd.a holds the ucd_isalpha / ucd_isspace / ucd_toupper /
+          # ucd_tolower symbols libespeak-ng calls into. espeak-ng's CMake
+          # builds it as a separate static lib in src/ucd-tools/ but
+          # `cmake --install` does NOT copy it into the install prefix —
+          # so finding it requires looking at the build tree directly.
+          # Forgetting this lib was the v0.6.9–0.6.13 Android regression
+          # (#6 follow-up): libcrispasr.so had unresolved ucd_* symbols,
+          # dlopen silently failed at runtime, the Dart side reported
+          # "Available backends: {}" and kokoro session_open threw
+          # "cannot locate symbol ucd_isalpha".
+          UCD_LIB=$(find "$GITHUB_WORKSPACE/espeak-ng-src/build-android" \
+            -name 'libucd.a' 2>/dev/null | head -1)
+          if [ -z "$UCD_LIB" ]; then
+            # Fallback: maybe a future espeak-ng version installs it.
+            UCD_LIB=$(find "$ESPEAK_NG_ANDROID_ROOT" -name 'libucd.a' \
+              2>/dev/null | head -1)
+          fi
+          echo "ESPEAK_INC=$ESPEAK_INC"
+          echo "ESPEAK_LIB=$ESPEAK_LIB"
+          echo "UCD_LIB=$UCD_LIB"
+          if [ -z "$ESPEAK_INC" ] || [ -z "$ESPEAK_LIB" ] || [ -z "$UCD_LIB" ]; then
+            echo "::error::espeak-ng cross-build artefacts incomplete — kokoro will be broken on Android (espeak-ng=$ESPEAK_LIB, ucd=$UCD_LIB)" >&2
+            exit 1
+          fi
+          # Stash UCD_LIB for the link step below.
+          echo "UCD_LIB=$UCD_LIB" >> $GITHUB_ENV
+          cmake -S . -B build-android/arm64-v8a \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK_TC" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_NATIVE_API_LEVEL=24 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCRISPASR_BUILD_EXAMPLES=OFF \
+            -DCRISPASR_BUILD_TESTS=OFF \
+            -DCRISPASR_OPUS_FETCH=ON \
+            -DCRISPASR_WITH_ESPEAK_NG=AUTO
+          cmake --build build-android/arm64-v8a --parallel
+          # Re-link all static archives into a single shared lib.
+          # CMake's OpenMP detection (-- Found OpenMP_CXX: -fopenmp=libomp)
+          # compiles ggml/whisper TUs with __kmpc_* calls, but this manual
+          # linker invocation doesn't pull in libomp by default. Adding
+          # -fopenmp -static-openmp pulls the NDK's libomp.a in and resolves
+          # those symbols inside libcrispasr.so — otherwise the runtime
+          # dies at dlopen with "cannot locate symbol __kmpc_global_thread_num"
+          # (a recurrence of #3 the v0.6.5 build hit).
+          cd build-android/arm64-v8a
+          NDK_CC=$(find $ANDROID_NDK_HOME/toolchains/llvm/prebuilt -name "aarch64-linux-android24-clang++" | head -1)
+          # espeak-ng (GPL-3.0) is NOT linked — WITH_ESPEAK_NG=AUTO compiles
+          # kokoro/piper to dlopen espeak at runtime, so libcrispasr.so has no
+          # espeak/ucd references and the APK ships GPL-free. Built-in G2P
+          # covers EN/DE/FR/ES.
+          $NDK_CC -shared -o src/libcrispasr.so \
+            -fopenmp -static-openmp \
+            -Wl,--whole-archive \
+            src/libcrispasr.a \
+            $(find . -name "lib*.a" ! -name "libcrispasr.a" ! -name "libCatch*" ! -name "libcommon*" -printf "%p ") \
+            -Wl,--no-whole-archive \
+            -lm -llog -lmediandk
+          ln -sf libcrispasr.so src/libwhisper.so
+          ls -lh src/libcrispasr.so
+          # Fail fast if any OpenMP runtime symbol is still UND — silent
+          # regression here is exactly how #3 keeps coming back.
+          NDKRE=$(find $ANDROID_NDK_HOME/toolchains/llvm/prebuilt -name "llvm-readelf" | head -1)
+          if "$NDKRE" --dyn-symbols src/libcrispasr.so \
+              | awk '$5=="UND"' | grep -qE "__kmpc|^.* omp_"; then
+            echo "::error::libcrispasr.so still has UND OpenMP symbols" >&2
+            "$NDKRE" --dyn-symbols src/libcrispasr.so \
+              | awk '$5=="UND"' | grep -E "__kmpc|omp_" >&2
+            exit 1
+          fi
+          # Same fail-fast guard for the ucd_* symbols libespeak-ng pulls
+          # in — without libucd.a in the link line, dlopen silently fails
+          # at runtime and we see "Available backends: {}" + kokoro
+          # session_open throwing "cannot locate symbol ucd_isalpha"
+          # (#6 v0.6.13 regression).
+          if "$NDKRE" --dyn-symbols src/libcrispasr.so \
+              | awk '$5=="UND"' | grep -qE "\\bucd_"; then
+            echo "::error::libcrispasr.so still has UND ucd_* symbols — libucd.a missing from link" >&2
+            "$NDKRE" --dyn-symbols src/libcrispasr.so \
+              | awk '$5=="UND"' | grep -E "\\bucd_" >&2
+            exit 1
+          fi
+          # Opus decode capability guard (#26) — libopus/opusfile must be
+          # statically linked so .opus files decode natively on Android
+          # (no ffmpeg on device). Without these symbols, opus decode
+          # silently falls through to the "unsupported format" error.
+          SYMS=$("$NDKRE" --dyn-symbols src/libcrispasr.so)
+          OPUS_OK=true
+          for sym in opus_decode_float opus_decoder_create op_open_file ma_libopus_init_file; do
+            if ! echo "$SYMS" | grep -q "$sym"; then
+              echo "::error::libcrispasr.so missing opus symbol: $sym (CRISPASR_OPUS_FETCH=ON not effective?)" >&2
+              OPUS_OK=false
+            fi
+          done
+          if [ "$OPUS_OK" = false ]; then exit 1; fi
+          echo "✓ opus symbols present"
+          # Core C API sanity — verify the public entry points exist.
+          # Catches link-order bugs where --whole-archive missed a TU.
+          for sym in crispasr_audio_load whisper_full whisper_init_from_file_with_params; do
+            if ! echo "$SYMS" | grep -q "$sym"; then
+              echo "::error::libcrispasr.so missing core symbol: $sym" >&2
+              exit 1
+            fi
+          done
+          echo "✓ core API symbols present"
+
+      - name: Cross-build libglint.so for Android arm64 (codec suite)
+        working-directory: repos/glint
+        env:
+          NDK_TC: ${{ env.ANDROID_NDK_HOME }}/build/cmake/android.toolchain.cmake
+        run: |
+          # Self-contained clean-room codec (only NEEDs libc++_shared, which
+          # the CrispASR step already stages into jniLibs). GLINT_MODE=fixed
+          # matches glint's own mobile CI (Q31 fixed-point, no FP reliance).
+          cmake -S . -B build-android/arm64-v8a \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK_TC" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-24 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGLINT_MODE=fixed
+          cmake --build build-android/arm64-v8a --parallel --target glint_shared
+          ls -lh build-android/arm64-v8a/libglint.so
+
+      - name: Copy native lib into jniLibs/
+        working-directory: repos/CrisperWeaver
+        run: |
+          DEST=android/app/src/main/jniLibs/arm64-v8a
+          mkdir -p "$DEST"
+          cp ../CrispASR/build-android/arm64-v8a/src/libcrispasr.so "$DEST/libwhisper.so"
+          cp "$DEST/libwhisper.so" "$DEST/libcrispasr.so"
+          # glint codec (MP3/AAC/Opus) — self-contained, NEEDs only the
+          # libc++_shared.so staged below.
+          cp ../glint/build-android/arm64-v8a/libglint.so "$DEST/libglint.so"
+          # libcrispasr.so is C++ and NEEDs libc++_shared.so — without it
+          # the Android loader silently fails DynamicLibrary.open and the
+          # Dart side falls back to availableBackends()=[], yielding the
+          # "bundled libwhisper was built with {}" error from issue #3.
+          # The NDK ships it under aarch64-linux-android (NOT "arm64", a
+          # filter mismatch that ate the v0.6.4 APK).
+          CPPSHARED=$(find "$ANDROID_NDK_HOME" -path "*aarch64-linux-android*" \
+            -name "libc++_shared.so" 2>/dev/null | head -1)
+          if [ -z "$CPPSHARED" ]; then
+            echo "::error::libc++_shared.so not found under \$ANDROID_NDK_HOME" >&2
+            exit 1
+          fi
+          cp "$CPPSHARED" "$DEST/"
+          ls -lh "$DEST/"
+          # Sanity: confirm every NEEDED dep of libcrispasr.so has a sibling
+          # in jniLibs/. Anything missing here = silent dlopen failure at
+          # runtime, which is exactly how issue #3 manifested.
+          NEEDED=$(${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf \
+            -d "$DEST/libcrispasr.so" | awk -F'[][]' '/\(NEEDED\)/{print $2}')
+          echo "libcrispasr.so NEEDS: $NEEDED"
+          for n in $NEEDED; do
+            case "$n" in
+              libm.so|libc.so|libdl.so|liblog.so|libmediandk.so) ;;  # provided by Android
+              *) [ -f "$DEST/$n" ] || { echo "::error::missing NEEDED dep $n" >&2; exit 1; } ;;
+            esac
+          done
+
+      # espeak-ng-data (GPL-3.0) is deliberately NOT staged into the APK.
+      # CrispASR is built WITH_ESPEAK_NG=AUTO (dlopen), so kokoro/piper use
+      # the built-in non-GPL G2P and the shipped app is GPL-free. The
+      # committed placeholder assets/espeak-ng-data.tar.gz stays as-is.
+
+      - name: Pub get
+        working-directory: repos/CrisperWeaver
+        run: flutter pub get
+
+      - name: Generate build info (git hash + timestamp)
+        working-directory: repos/CrisperWeaver
+        run: bash scripts/gen_build_info.sh
+
+      - name: Refresh baked models catalogue
+        working-directory: repos/CrisperWeaver
+        # Re-bake `lib/services/baked_models_catalog.dart` from the live
+        # HF API so every release ships with a current snapshot — without
+        # this the Models screen would either wait on the live probe at
+        # first launch OR show stale catalog entries. ~30 s + 30 HTTP
+        # requests; failures don't gate the build (the committed snapshot
+        # is the floor).
+        run: timeout 120 dart run scripts/bake_models_catalog.dart || true
+
+      - name: Build APK (release, unsigned)
+        working-directory: repos/CrisperWeaver
+        run: flutter build apk --release --target-platform=android-arm64
+
+      - name: Rename APK
+        working-directory: repos/CrisperWeaver
+        run: |
+          cp build/app/outputs/flutter-apk/app-release.apk \
+             crisper_weaver-android-arm64.apk
+          sha256sum crisper_weaver-android-arm64.apk | tee crisper_weaver-android-arm64.apk.sha256
+
+      - name: Upload APK
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          files: |
+            repos/CrisperWeaver/crisper_weaver-android-arm64.apk
+            repos/CrisperWeaver/crisper_weaver-android-arm64.apk.sha256
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
+
+  # Unsigned iOS IPA — sideload-compatible (AltStore / SideStore / Feather).
+  # End-users re-sign with their own free Apple ID (7-day renewal); developers
+  # with a paid Apple Developer Program can re-sign for 1-year installs.
+  # This job is marked continue-on-error since the iOS build path isn't yet
+  # verified end-to-end (first release in which we attempt it).
+  build-ios:
+    name: iOS IPA (unsigned, sideload-ready)
+    needs: validate-tag
+    # macos-26 ships Xcode 26 (iOS 26.1 SDK). device_info_plus 13.1.0 calls
+    # -[NSProcessInfo isiOSAppOnVision] under @available(iOS 26.1) — it needs
+    # the 26.1 SDK to *compile* (the selector is undeclared on macos-latest's
+    # Xcode 16.4 / iOS 18.5 SDK), which broke the v0.7.7 iOS build.
+    runs-on: macos-26
+    permissions:
+      contents: write
+    continue-on-error: true
+    steps:
+      - name: Check out CrisperWeaver
+        uses: actions/checkout@v5
+        with:
+          path: repos/CrisperWeaver
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Check out sibling CrispASR
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.CRISPASR_REPO }}
+          ref: ${{ env.CRISPASR_REF }}
+          path: repos/CrispASR
+          submodules: recursive
+
+      - name: Check out sibling CrispEmbed
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.CRISPEMBED_REPO }}
+          ref: ${{ env.CRISPEMBED_REF }}
+          path: repos/CrispEmbed
+          submodules: recursive
+
+      - name: Check out sibling glint
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.GLINT_REPO }}
+          ref: ${{ env.GLINT_REF }}
+          path: repos/glint
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      # Build crispasr.xcframework with iOS-only slices (device +
+      # simulator, arm64). Without this, the IPA's Runner.app launches
+      # but every transcription fails with "no backends" because
+      # nothing in ios/ supplies libcrispasr to dart:ffi.
+      - name: Build crispasr.xcframework (iOS slim)
+        working-directory: repos/CrisperWeaver
+        env:
+          CRISPASR_DIR: ${{ github.workspace }}/repos/CrispASR
+          IOS_MIN_OS_VERSION: "13.0"
+        run: bash scripts/build_ios_xcframework.sh
+
+      # Add the xcframework to Runner.xcodeproj as a linked + embedded
+      # framework via the xcodeproj Ruby gem (already installed because
+      # CocoaPods uses it).
+      - name: Wire xcframework into Runner.xcodeproj
+        working-directory: repos/CrisperWeaver
+        run: |
+          gem install xcodeproj --no-document
+          ruby scripts/wire_ios_xcframework.rb
+
+      # glint codec framework — its Dart loader uses DynamicLibrary.process()
+      # on iOS, so the framework must be LINKED into Runner (the wire script
+      # does that) for glint_* to resolve at runtime.
+      - name: Build glint.xcframework (iOS codec suite)
+        working-directory: repos/CrisperWeaver
+        env:
+          GLINT_DIR: ${{ github.workspace }}/repos/glint
+          IOS_MIN_OS_VERSION: "13.0"
+        run: bash scripts/build_ios_glint_xcframework.sh
+
+      - name: Wire glint.xcframework into Runner.xcodeproj
+        working-directory: repos/CrisperWeaver
+        run: ruby scripts/wire_ios_glint.rb
+
+      - name: Pub get
+        working-directory: repos/CrisperWeaver
+        run: flutter pub get
+
+      - name: Generate build info (git hash + timestamp)
+        working-directory: repos/CrisperWeaver
+        run: bash scripts/gen_build_info.sh
+
+      - name: Refresh baked models catalogue
+        working-directory: repos/CrisperWeaver
+        # Re-bake `lib/services/baked_models_catalog.dart` from the live
+        # HF API so every release ships with a current snapshot — without
+        # this the Models screen would either wait on the live probe at
+        # first launch OR show stale catalog entries. ~30 s + 30 HTTP
+        # requests; failures don't gate the build (the committed snapshot
+        # is the floor).
+        run: timeout 120 dart run scripts/bake_models_catalog.dart || true
+
+      - name: Build iOS (no codesign — Flutter step)
+        working-directory: repos/CrisperWeaver
+        run: flutter build ios --release --no-codesign
+
+      # --- App Store signed path (when API key secret is set) ---
+      - name: Install signing credentials
+        id: signing
+        if: ${{ env.APPSTORE_API_KEY_P8 != '' }}
+        continue-on-error: true
+        env:
+          APPSTORE_API_KEY_P8: ${{ secrets.APPSTORE_API_KEY_P8 }}
+          IOS_DIST_P12: ${{ secrets.IOS_DIST_P12 }}
+          IOS_DIST_P12_PASSWORD: ${{ secrets.IOS_DIST_P12_PASSWORD }}
+          IOS_PROFILE_APP_BASE64: ${{ secrets.IOS_PROFILE_APP_BASE64 }}
+          IOS_PROFILE_EXT_BASE64: ${{ secrets.IOS_PROFILE_EXT_BASE64 }}
+        run: |
+          mkdir -p ~/.appstoreconnect/private_keys
+          KEY=~/.appstoreconnect/private_keys/AuthKey_9RMU3C7422.p8
+          # APPSTORE_API_KEY_P8 should be base64 of the .p8 (fleet
+          # convention, same as IOS_DIST_P12 below and the canonical
+          # ios-release.yml — see ../appstore.md). Try base64-decode; if
+          # that isn't a PEM, fall back to writing it raw. If NEITHER is a
+          # valid PEM the secret itself is malformed/truncated — warn and
+          # leave App Store signing disabled (the unsigned sideload IPA
+          # below still ships). Re-set the secret to fix App Store upload.
+          echo "$APPSTORE_API_KEY_P8" | base64 --decode > "$KEY" 2>/dev/null || true
+          if ! head -1 "$KEY" | grep -q "BEGIN PRIVATE KEY"; then
+            printf '%s' "$APPSTORE_API_KEY_P8" > "$KEY"
+          fi
+          if head -1 "$KEY" | grep -q "BEGIN PRIVATE KEY"; then
+            chmod 600 "$KEY"
+            echo "signing_ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::APPSTORE_API_KEY_P8 is not a valid .p8 (neither base64 nor raw PEM) — App Store signing/upload is SKIPPED; the unsigned sideload IPA still ships. Re-set the secret per ../appstore.md."
+            echo "signing_ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Import Distribution cert + private key
+          KEYCHAIN="build.keychain-db"
+          security create-keychain -p "" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "" "$KEYCHAIN"
+          if [ -n "$IOS_DIST_P12" ]; then
+            echo "$IOS_DIST_P12" | base64 -d > /tmp/dist.p12
+            security import /tmp/dist.p12 -k "$KEYCHAIN" -P "$IOS_DIST_P12_PASSWORD" \
+              -T /usr/bin/codesign -T /usr/bin/security
+            rm /tmp/dist.p12
+          fi
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          security find-identity -v -p codesigning | grep -i "distribution" || echo "WARNING: No Distribution cert"
+          # --- Install explicit App Store provisioning profiles (manual signing) ---
+          # CI holds only the Distribution key, so we sign manually against
+          # profiles created via the ASC API (bound to the shared Distribution
+          # cert). The app AND its ShareExtension each need one. We deliberately
+          # do NOT use `-allowProvisioningUpdates` anywhere — on a runner it
+          # mints a Development cert and silently revokes the shared Distribution
+          # cert to stay under Apple's 5-cert limit, breaking every app's
+          # signing (see ../appstore.md). Install to both the legacy dir and the
+          # Xcode-16+/26 dir, named <UUID>.mobileprovision.
+          if [ -n "$IOS_PROFILE_APP_BASE64" ] && [ -n "$IOS_PROFILE_EXT_BASE64" ]; then
+            PDIRS=("$HOME/Library/MobileDevice/Provisioning Profiles" \
+                   "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles")
+            for d in "${PDIRS[@]}"; do mkdir -p "$d"; done
+            for b64 in "$IOS_PROFILE_APP_BASE64" "$IOS_PROFILE_EXT_BASE64"; do
+              tmp=$(mktemp)
+              echo "$b64" | base64 --decode > "$tmp"
+              uuid=$(security cms -D -i "$tmp" 2>/dev/null | plutil -extract UUID raw -)
+              name=$(security cms -D -i "$tmp" 2>/dev/null | plutil -extract Name raw -)
+              for d in "${PDIRS[@]}"; do cp "$tmp" "$d/$uuid.mobileprovision"; done
+              echo "installed profile '$name' ($uuid)"
+              rm -f "$tmp"
+            done
+            echo "profiles_ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::IOS_PROFILE_APP_BASE64 / IOS_PROFILE_EXT_BASE64 not set — manual App Store signing is unavailable; only the unsigned sideload IPA will ship."
+            echo "profiles_ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Package the UNSIGNED sideload IPA first, from the no-codesign Flutter
+      # build, so the (clean) Distribution archive below can't disturb it. This
+      # is the job's guaranteed deliverable regardless of App Store signing.
+      - name: Package unsigned IPA
+        if: always()
+        working-directory: repos/CrisperWeaver
+        run: |
+          mkdir -p Payload
+          cp -R build/ios/iphoneos/Runner.app Payload/
+          zip -qr crisper_weaver-ios-unsigned.ipa Payload
+          shasum -a 256 crisper_weaver-ios-unsigned.ipa | tee crisper_weaver-ios-unsigned.ipa.sha256
+
+      # Archive UNSIGNED (CI has no Development profile) via a bare xcodebuild —
+      # NOT `flutter build ipa`, which forces automatic signing and needs an
+      # Xcode account (that was the silent build-71 failure: "No profiles for
+      # com.crispstrobe.crisperweaver were found"). Distribution signing is
+      # applied at -exportArchive from the manual ExportOptions. This project
+      # has no Swift Package Manager plugin refs, so the CocoaPods archive
+      # builds cleanly. Fail loud (no continue-on-error) — a broken archive
+      # must turn the job red, not slip through green with 0 uploaded builds.
+      - name: Archive (xcodebuild, unsigned)
+        if: ${{ steps.signing.outputs.signing_ready == 'true' && steps.signing.outputs.profiles_ready == 'true' }}
+        working-directory: repos/CrisperWeaver
+        run: |
+          set -o pipefail
+          PATH="/usr/bin:$PATH" xcodebuild \
+            -workspace ios/Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/ios/archive/Runner.xcarchive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            clean archive
+          ls -la build/ios/archive/Runner.xcarchive/Products/Applications/Runner.app/ > /dev/null
+
+      - name: Export signed IPA
+        if: ${{ steps.signing.outputs.signing_ready == 'true' && steps.signing.outputs.profiles_ready == 'true' }}
+        working-directory: repos/CrisperWeaver
+        run: |
+          # Manual signing from ExportOptions.plist + the installed profiles.
+          # No -allowProvisioningUpdates / auth key (see the footgun note above).
+          PATH="/usr/bin:$PATH" xcodebuild -exportArchive \
+            -archivePath build/ios/archive/Runner.xcarchive \
+            -exportPath build/ios/export \
+            -exportOptionsPlist ios/ExportOptions.plist
+          # xcodebuild names the exported IPA after PRODUCT_NAME
+          # (crisper_weaver.ipa), NOT the scheme (Runner.ipa) — glob for it.
+          IPA=$(ls build/ios/export/*.ipa 2>/dev/null | head -1)
+          if [ -z "$IPA" ] || [ ! -f "$IPA" ]; then
+            echo "::error::exportArchive produced no .ipa — App Store signing failed. Not uploading."
+            ls -la build/ios/export || true
+            exit 1
+          fi
+          cp "$IPA" crisper_weaver-ios-appstore.ipa
+          shasum -a 256 crisper_weaver-ios-appstore.ipa | tee crisper_weaver-ios-appstore.ipa.sha256
+
+      # Advisory pre-check. altool --validate-app needs --apple-id (the numeric
+      # app id) or it can't resolve the app from the bundle id
+      # ("Cannot determine the Apple ID from Bundle ID"). Non-fatal: the Upload
+      # step below re-validates server-side and is the real gate, so a validate
+      # hiccup must not block the actual upload.
+      - name: Validate signed IPA
+        if: ${{ steps.signing.outputs.signing_ready == 'true' && steps.signing.outputs.profiles_ready == 'true' && env.APPSTORE_APP_ID != '' }}
+        continue-on-error: true
+        working-directory: repos/CrisperWeaver
+        env:
+          APPSTORE_API_KEY_P8: ${{ secrets.APPSTORE_API_KEY_P8 }}
+          APPSTORE_APP_ID: ${{ secrets.APPSTORE_APP_ID }}
+        run: |
+          xcrun altool --validate-app \
+            -f crisper_weaver-ios-appstore.ipa \
+            --type ios \
+            --apple-id "$APPSTORE_APP_ID" \
+            --api-key 9RMU3C7422 \
+            --api-issuer 5f618ba3-98ef-42ad-835c-fbbef6c76cf5
+
+      - name: Upload to App Store Connect
+        if: ${{ steps.signing.outputs.signing_ready == 'true' && steps.signing.outputs.profiles_ready == 'true' && env.APPSTORE_APP_ID != '' }}
+        working-directory: repos/CrisperWeaver
+        env:
+          APPSTORE_API_KEY_P8: ${{ secrets.APPSTORE_API_KEY_P8 }}
+          APPSTORE_APP_ID: ${{ secrets.APPSTORE_APP_ID }}
+        run: |
+          VERSION=$(grep 'version:' pubspec.yaml | head -1 | sed 's/version: //' | cut -d+ -f1)
+          BUILD=$(grep 'version:' pubspec.yaml | head -1 | sed 's/version: //' | cut -d+ -f2)
+          xcrun altool --upload-package crisper_weaver-ios-appstore.ipa \
+            --type ios \
+            --apple-id "$APPSTORE_APP_ID" \
+            --bundle-id com.crispstrobe.crisperweaver \
+            --bundle-version "$BUILD" \
+            --bundle-short-version-string "$VERSION" \
+            --api-key 9RMU3C7422 \
+            --api-issuer 5f618ba3-98ef-42ad-835c-fbbef6c76cf5
+
+      - name: Upload IPA
+        if: always()
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          files: |
+            repos/CrisperWeaver/crisper_weaver-ios-appstore.ipa
+            repos/CrisperWeaver/crisper_weaver-ios-appstore.ipa.sha256
+            repos/CrisperWeaver/crisper_weaver-ios-unsigned.ipa
+            repos/CrisperWeaver/crisper_weaver-ios-unsigned.ipa.sha256
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: false
+
+  # Windows Flutter desktop build. Uses MSVC 2022 from the runner image,
+  # builds CrispASR as shared DLLs (whisper.dll + sibling backend DLLs),
+  # bundles them next to runner.exe, and zips the whole Release directory.
+  # Marked continue-on-error: the CrispASR shared-library Windows build
+  # hasn't been exercised before — upstream CI only tests static libs
+  # for their CLI. If whisper.dll fails to produce all its symbols, we
+  # learn that here, not during a user install.
+  build-windows:
+    name: Windows (.zip)
+    needs: validate-tag
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    continue-on-error: true
+    steps:
+      - name: Check out CrisperWeaver
+        uses: actions/checkout@v5
+        with:
+          path: repos/CrisperWeaver
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Check out sibling CrispASR
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.CRISPASR_REPO }}
+          ref: ${{ env.CRISPASR_REF }}
+          path: repos/CrispASR
+          submodules: recursive
+
+      - name: Check out sibling CrispEmbed
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.CRISPEMBED_REPO }}
+          ref: ${{ env.CRISPEMBED_REF }}
+          path: repos/CrispEmbed
+          submodules: recursive
+
+      - name: Check out sibling glint
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.GLINT_REPO }}
+          ref: ${{ env.GLINT_REF }}
+          path: repos/glint
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Build espeak-ng from source (kokoro phonemizer)
+        shell: pwsh
+        # The official Chocolatey MSI ships libespeak-ng.dll +
+        # espeak-ng.exe + espeak-ng-data but NOT the import library
+        # (libespeak-ng.lib) or headers — both required to link
+        # CRISPASR_HAVE_ESPEAK_NG=1 at build time. Without them
+        # CrispASR falls back to popen("espeak-ng"), which fails on
+        # Windows because cmd.exe doesn't honour the Unix
+        # single-quote escaping in the kokoro popen invocation.
+        # Build from the 1.52.0 source tag so we get DLL + LIB +
+        # headers + data dir straight out of the same CMake project.
+        env:
+          # Same master pin as the Android cross-build — keeps the
+          # source ref consistent across platforms and lets us share
+          # any future espeak-ng fixes uniformly.
+          ESPEAK_NG_REF: "master"
+        run: |
+          git clone --depth=1 --branch $env:ESPEAK_NG_REF `
+            https://github.com/espeak-ng/espeak-ng.git espeak-ng-src
+          cd espeak-ng-src
+          cmake -B build `
+            -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DBUILD_SHARED_LIBS=ON `
+            -DUSE_ASYNC=OFF -DUSE_MBROLA=OFF -DUSE_KLATT=OFF `
+            -DUSE_LIBPCAUDIO=OFF -DUSE_LIBSONIC=OFF `
+            -DESPEAK_COMPAT=OFF `
+            -DENABLE_TESTS=OFF `
+            -DCMAKE_INSTALL_PREFIX="$env:GITHUB_WORKSPACE\espeak-ng-win"
+          cmake --build build --config Release --target espeak-ng-bin
+          cmake --build build --config Release
+          cmake --install build --config Release
+          $root = "$env:GITHUB_WORKSPACE\espeak-ng-win"
+          if (-not (Test-Path $root)) {
+            Write-Error "espeak-ng install dir missing after build"
+            exit 1
+          }
+          echo "ESPEAK_NG_ROOT=$root" >> $env:GITHUB_ENV
+          Write-Host "espeak-ng install layout:"
+          Get-ChildItem $root | Format-Table Name
+          Get-ChildItem $root -Recurse -Include "*.dll", "*.lib", "speak_lib.h" |
+            ForEach-Object { Write-Host "  $($_.FullName)" }
+
+      - name: Build whisper.dll (shared, Release)
+        working-directory: repos/CrispASR
+        shell: pwsh
+        # Pass ESPEAK_NG_INCLUDE_DIR + ESPEAK_NG_LIBRARY explicitly so
+        # CRISPASR_HAVE_ESPEAK_NG=1 gets set + the import library
+        # links into whisper.dll. The CMake `cmake --install` layout
+        # from the source-built espeak-ng puts the .lib under lib\
+        # and headers under include\. Without this, the manual MSI
+        # install path silently falls back to popen which is broken on
+        # Windows (cmd.exe doesn't honour the Unix single-quote
+        # escaping in the kokoro popen invocation) — that's issue #6.
+        run: |
+          $espeakRoot = $env:ESPEAK_NG_ROOT
+          $espeakInc  = Join-Path $espeakRoot "include"
+          $espeakLib  = ""
+          foreach ($cand in @(
+              "$espeakRoot\lib\libespeak-ng.lib",
+              "$espeakRoot\lib\espeak-ng.lib",
+              "$espeakRoot\libespeak-ng.lib")) {
+            if (Test-Path $cand) { $espeakLib = $cand; break }
+          }
+          if (-not $espeakLib) {
+            Get-ChildItem -Recurse -Path $espeakRoot -Filter "*espeak-ng*.lib" |
+              ForEach-Object { if (-not $espeakLib) { $espeakLib = $_.FullName } }
+          }
+          Write-Host "ESPEAK_NG_INCLUDE_DIR=$espeakInc"
+          Write-Host "ESPEAK_NG_LIBRARY=$espeakLib"
+          if (-not ($espeakLib -and (Test-Path "$espeakInc\espeak-ng\speak_lib.h"))) {
+            Write-Error "espeak-ng dev files missing (.lib=$espeakLib, header=$espeakInc\espeak-ng\speak_lib.h)"
+            exit 1
+          }
+          # Patch POSIX popen/pclose → MSVC _popen/_pclose in any
+          # CrispASR source that uses them (zonos_tts.cpp today).
+          # Upstream fix pending; this keeps the Windows build green.
+          Get-ChildItem src -Recurse -Filter *.cpp |
+            Where-Object { (Get-Content $_.FullName -Raw) -match '\bpopen\b' } |
+            ForEach-Object {
+              $content = Get-Content $_.FullName -Raw
+              if ($content -notmatch '#define popen _popen') {
+                $patch = "#ifdef _MSC_VER`n#define popen _popen`n#define pclose _pclose`n#endif`n"
+                Set-Content $_.FullName ($patch + $content)
+                Write-Host "  patched $($_.Name) with popen→_popen compat"
+              }
+            }
+          # GGML_NATIVE=OFF disables build-host CPU detection so the
+          # DLL doesn't bake in AVX-512 from the GitHub Actions runner.
+          # Explicit AVX2+FMA gives best perf on Zen2+ / Haswell+ while
+          # keeping Zen3 and older Intel safe. Fixes #19.
+          cmake -B build `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DBUILD_SHARED_LIBS=ON `
+            -DGGML_NATIVE=OFF `
+            -DGGML_AVX2=ON `
+            -DGGML_AVX=ON `
+            -DGGML_FMA=ON `
+            -DGGML_F16C=ON `
+            -DGGML_AVX512=OFF `
+            -DWHISPER_BUILD_EXAMPLES=OFF `
+            -DWHISPER_BUILD_TESTS=OFF `
+            -DCRISPASR_OPUS_FETCH=ON `
+            -DCRISPASR_WITH_ESPEAK_NG=AUTO
+          # WITH_ESPEAK_NG=AUTO: kokoro/piper dlopen espeak at runtime (NOT
+          # linked), so whisper.dll carries no espeak import and the app ships
+          # GPL-free (App-Store-safe). Built-in G2P covers EN/DE/FR/ES; a user
+          # can drop their own libespeak-ng.dll in for the rest. The dumpbin
+          # guard in bundle_windows_dlls.ps1 verifies no espeak import remains.
+          cmake --build build --config Release --parallel --target crispasr-lib
+          Get-ChildItem build -Recurse -Filter *.dll | Select-Object FullName, Length
+
+      - name: Build glint.dll (codec suite)
+        working-directory: repos/glint
+        shell: pwsh
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release --parallel --target glint_shared
+          Get-ChildItem build -Recurse -Filter glint.dll | Select-Object FullName, Length
+
+      - name: Enable Windows desktop + pub get
+        working-directory: repos/CrisperWeaver
+        shell: pwsh
+        run: |
+          flutter config --enable-windows-desktop
+          flutter pub get
+
+      - name: Generate build info (git hash + timestamp)
+        working-directory: repos/CrisperWeaver
+        shell: bash
+        run: bash scripts/gen_build_info.sh
+
+      - name: Refresh baked models catalogue
+        working-directory: repos/CrisperWeaver
+        shell: pwsh
+        run: timeout 120 dart run scripts/bake_models_catalog.dart || true
+
+      - name: Build Windows (Release)
+        working-directory: repos/CrisperWeaver
+        shell: pwsh
+        run: flutter build windows --release
+
+      - name: Bundle CrispASR + glint DLLs next to runner.exe
+        working-directory: repos/CrisperWeaver
+        shell: pwsh
+        env:
+          CRISPASR_DIR: ${{ github.workspace }}\repos\CrispASR
+          GLINT_DIR: ${{ github.workspace }}\repos\glint
+          RUNNER_DIR: build\windows\x64\runner\Release
+        run: pwsh ./scripts/bundle_windows_dlls.ps1
+
+      # Package the same Release/ directory into an MSIX. Windows
+      # learns the audio + subtitle file associations from the
+      # msix_config block in pubspec.yaml; the argv intake in
+      # main.dart handles the receive side. Unsigned for v1 —
+      # SmartScreen complains, README documents the trust-once
+      # sideload flow.
+      - name: Build MSIX
+        working-directory: repos/CrisperWeaver
+        shell: pwsh
+        # msix 3.16.13 dropped the --verbose flag (the CLI parser hard-
+        # errors with `Could not find an option named "--verbose"`),
+        # which broke every Windows release since v0.6.5. Just don't
+        # pass it — msix:create logs enough at the default level.
+        run: |
+          flutter pub run msix:create
+          $msix = Get-ChildItem -Recurse build\windows\x64\runner\Release -Filter *.msix | Select-Object -First 1
+          if (-not $msix) { Write-Error 'msix:create produced no .msix'; exit 1 }
+          $dst = "crisper_weaver-windows-x64.msix"
+          Copy-Item $msix.FullName $dst
+          (Get-FileHash $dst -Algorithm SHA256).Hash | Tee-Object -FilePath "${dst}.sha256"
+
+      - name: Zip release dir
+        working-directory: repos/CrisperWeaver/build/windows/x64/runner
+        shell: pwsh
+        run: |
+          Rename-Item Release crisper_weaver
+          Compress-Archive -Path crisper_weaver -DestinationPath crisper_weaver-windows-x64.zip -CompressionLevel Optimal
+          (Get-FileHash crisper_weaver-windows-x64.zip -Algorithm SHA256).Hash | Tee-Object -FilePath crisper_weaver-windows-x64.zip.sha256
+
+      - name: Upload Windows zip + MSIX
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          files: |
+            repos/CrisperWeaver/build/windows/x64/runner/crisper_weaver-windows-x64.zip
+            repos/CrisperWeaver/build/windows/x64/runner/crisper_weaver-windows-x64.zip.sha256
+            repos/CrisperWeaver/crisper_weaver-windows-x64.msix
+            repos/CrisperWeaver/crisper_weaver-windows-x64.msix.sha256
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: false

@@ -1,0 +1,30 @@
+{
+  "bundle_file": "jarvisol_source_bundle_vague_c.zip",
+  "bundle_path": "D:\\Antigravity\\AgentFolder\\jarvisol_source_bundle_vague_c.zip",
+  "size_bytes": 1048074182,
+  "sha256": "43fbd2f4a886f19f8f56fb54cb29c4305f9a4744cb92ad9bfb6d3a8d4f882bbb",
+  "included_repositories": [
+    {
+      "name": "CrisperWeaver",
+      "relative_path": "CrisperWeaver"
+    },
+    {
+      "name": "CrispASR",
+      "relative_path": "CrispASR"
+    },
+    {
+      "name": "CrispEmbed",
+      "relative_path": "CrispEmbed"
+    },
+    {
+      "name": "glint",
+      "relative_path": "glint"
+    }
+  ],
+  "reproducibility_qualification": {
+    "test_scenario": "TNR-058",
+    "status": "PASS",
+    "isolated_pub_get": "SUCCESS",
+    "verification_note": "Self-contained bundle extracts cleanly with all relative sibling dependencies resolved without host filesystem pollution."
+  }
+}

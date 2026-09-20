@@ -1,0 +1,38 @@
+set(CRISPEMBED_VERSION       @PROJECT_VERSION@)
+set(CRISPEMBED_SHARED_LIB    @CRISPEMBED_BUILD_SHARED@)
+set(CRISPEMBED_BUILD_COMMIT  @CRISPEMBED_BUILD_COMMIT@)
+
+@PACKAGE_INIT@
+
+set_and_check(CRISPEMBED_INCLUDE_DIR "@PACKAGE_CRISPEMBED_INCLUDE_INSTALL_DIR@")
+set_and_check(CRISPEMBED_LIB_DIR     "@PACKAGE_CRISPEMBED_LIB_INSTALL_DIR@")
+set_and_check(CRISPEMBED_BIN_DIR     "@PACKAGE_CRISPEMBED_BIN_INSTALL_DIR@")
+
+# Locate libcrispembed installed by `cmake --install`. We avoid install(EXPORT)
+# because the shared lib's PRIVATE link to ggml-cpu (itself SHARED) trips
+# install(EXPORT)'s dependency-set check; instead we hand-roll the IMPORTED
+# target. Runtime resolution of libggml*.so siblings is handled by the .so's
+# RPATH ($ORIGIN / @loader_path), set at install time in the root CMakeLists.
+find_library(crispembed_LIBRARY crispembed
+    REQUIRED
+    HINTS ${CRISPEMBED_LIB_DIR}
+    NO_CMAKE_FIND_ROOT_PATH
+)
+
+if(NOT TARGET crispembed::crispembed)
+    add_library(crispembed::crispembed UNKNOWN IMPORTED)
+    set_target_properties(crispembed::crispembed PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES   "${CRISPEMBED_INCLUDE_DIR}"
+        IMPORTED_LOCATION               "${crispembed_LIBRARY}"
+        IMPORTED_LINK_INTERFACE_LANGUAGES "CXX"
+        # On Windows the IMPORTED target needs the import-lib alongside the
+        # DLL. find_library above will pick crispembed.lib in that case.
+        INTERFACE_COMPILE_FEATURES      cxx_std_11
+    )
+    # Define CRISPEMBED_SHARED on consumers so __declspec(dllimport) kicks in
+    # on Windows. Harmless on Unix.
+    target_compile_definitions(crispembed::crispembed
+        INTERFACE CRISPEMBED_SHARED)
+endif()
+
+check_required_components(crispembed)

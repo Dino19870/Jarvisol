@@ -1,0 +1,17 @@
+Chemin,Version,Taille,SHA-256,Licence,Raison_Presence
+runtime/node/node.exe,v25.9.0,95618048,98843732431bad6c2c165908bb7dde6fe2a221ddbc491a955d548a2e6ab9ebff,MIT (Node.js Foundation),Binaire executable Node.js portable permettant d'executer le runtime JS sans dependance globale
+runtime/node/npm,11.11.0,2073,13372aa943f8eb32c9a8b6f946ed6a49118edd60051321953288b1f35611aefb,Artistic License 2.0,Script wrapper shell POSIX pour npm
+runtime/node/npm.cmd,11.11.0,538,21b46c69ad6e2f231f02a9e120f4ba6c8e75fef5a45637103002eab99f888ab8,Artistic License 2.0,Script wrapper Windows Batch pour npm
+runtime/node/npx,11.11.0,2073,a8be7733861aede8f9c331ad7b60aa225dd085271d6de68946f0fb5d0717de09,Artistic License 2.0,Script wrapper shell POSIX pour npx
+runtime/node/npx.cmd,11.11.0,538,4dd3574f4396fc3b45c52b6ac80fd52be2dd2660d2a153b4cc807dbbfeefa7a0,Artistic License 2.0,Script wrapper Windows Batch pour lancer npx
+runtime/node/node_modules/npm/bin/npx-cli.js,11.11.0,3051,a9ca027c18c5bd7da278230edc7a174ff1d8b6b558e0e0a4a2c9c2fae346d66b,Artistic License 2.0,Point d'entree JavaScript canonique pour executer npx directement via node.exe sans sous-shell cmd.exe
+runtime/node/node_modules/npm/bin/npm-cli.js,11.11.0,56,3ce7cba6f5128dd5f54c98b6a5036b0f850496878cc2e21044b675fe3c594e3e,Artistic License 2.0,Point d'entree JavaScript canonique pour gestionnaire de paquets npm
+runtime/node/LICENSE.txt,v25.9.0,1119,1c73b16f21d00fe2c79883c5f75d835a196d7f5c29dc842fbaf1d57e804d81a1,MIT / ICU / V8 notices,Licence et mentions legales officielles distribuees avec le runtime portable Node.js
+build/windows/x64/runner/Release/runtime/node/node.exe,v25.9.0,95618048,98843732431bad6c2c165908bb7dde6fe2a221ddbc491a955d548a2e6ab9ebff,MIT (Node.js Foundation),Executable Node.js portable pour le binaire Windows Release CrisperWeaver.exe
+build/windows/x64/runner/Release/runtime/node/npm,11.11.0,2073,13372aa943f8eb32c9a8b6f946ed6a49118edd60051321953288b1f35611aefb,Artistic License 2.0,Script wrapper shell POSIX pour npm (Release)
+build/windows/x64/runner/Release/runtime/node/npm.cmd,11.11.0,538,21b46c69ad6e2f231f02a9e120f4ba6c8e75fef5a45637103002eab99f888ab8,Artistic License 2.0,Script wrapper Windows Batch pour npm (Release)
+build/windows/x64/runner/Release/runtime/node/npx,11.11.0,2073,a8be7733861aede8f9c331ad7b60aa225dd085271d6de68946f0fb5d0717de09,Artistic License 2.0,Script wrapper shell POSIX pour npx (Release)
+build/windows/x64/runner/Release/runtime/node/npx.cmd,11.11.0,538,4dd3574f4396fc3b45c52b6ac80fd52be2dd2660d2a153b4cc807dbbfeefa7a0,Artistic License 2.0,Script wrapper Windows Batch pour lancer npx (Release)
+build/windows/x64/runner/Release/runtime/node/node_modules/npm/bin/npx-cli.js,11.11.0,3051,a9ca027c18c5bd7da278230edc7a174ff1d8b6b558e0e0a4a2c9c2fae346d66b,Artistic License 2.0,Point d'entree JavaScript canonique pour npx (Release runner)
+build/windows/x64/runner/Release/runtime/node/node_modules/npm/bin/npm-cli.js,11.11.0,56,3ce7cba6f5128dd5f54c98b6a5036b0f850496878cc2e21044b675fe3c594e3e,Artistic License 2.0,Point d'entree JavaScript canonique pour npm (Release runner)
+build/windows/x64/runner/Release/runtime/node/LICENSE.txt,v25.9.0,1119,1c73b16f21d00fe2c79883c5f75d835a196d7f5c29dc842fbaf1d57e804d81a1,MIT / ICU / V8 notices,Licence et mentions legales officielles distribuees avec le runtime portable Node.js (Release)

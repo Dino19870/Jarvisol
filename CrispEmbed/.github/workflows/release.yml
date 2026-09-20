@@ -1,0 +1,970 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # Dry run: build and inspect the real release artifacts without cutting a
+  # tag. Every publish step below is guarded on refs/tags/, so a dispatch
+  # run uploads workflow artifacts only and creates no GitHub release.
+  # Added because SubtitleEdit#13205 (an unbundled libopenblas.so.0 that
+  # made every Linux tarball exit 127) was only observable in the packaged
+  # artifact, and the only way to produce one was to publish a release.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    # The Linux legs build inside a manylinux image; every other leg leaves this
+    # empty, which GitHub treats as "no container". See the glibc note on the
+    # linux-x86_64 entry below.
+    container: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ── CPU ISA baseline: every leg pins -DGGML_NATIVE=OFF ──────────
+          # ggml's GGML_NATIVE (default ON) probes the BUILD machine: on MSVC
+          # it *runs* FindSIMD.cmake's test programs and turns on /arch:AVX512
+          # if they succeed; on ARM it runs -mcpu=native feature probes for
+          # dotprod/i8mm/sve/sme. GitHub's runner pools are heterogeneous
+          # (windows-latest mixes AVX-512 Intel with AVX2-only AMD), so with
+          # NATIVE on, whether a release runs on consumer hardware is decided
+          # by which runner picked up the job.
+          #
+          # That shipped as #41: the v0.16.1 cpu zip died with "Illegal
+          # instruction" on an i9-14900KF (AVX2, no AVX-512) while the cuda
+          # zip — the one leg that already pinned GGML_NATIVE=OFF — was fine.
+          #
+          # NATIVE=OFF gives ggml a fixed x86 baseline of SSE4.2/AVX/AVX2/
+          # FMA/F16C/BMI2 with AVX-512 and AMX off, and CrispEmbed's own
+          # targets follow it (CRISPEMBED_NATIVE defaults to GGML_NATIVE).
+          # The `Verify portable CPU baseline` step below enforces it so this
+          # cannot silently regress again.
+          #
+          # ── No OpenBLAS in the Linux tarballs (SubtitleEdit#13205) ──────
+          # GGML_BLAS=ON gives libggml-blas.so a hard DT_NEEDED on
+          # libopenblas.so.0, which the archive does not ship and which is not
+          # installed by default on most distros. The loader then fails before
+          # main(), so crispembed-server dies with exit code 127 and prints
+          # nothing — reported against EndeavourOS and Linux Lite, and it
+          # affected every Linux user of every release: the runner had
+          # libopenblas-dev installed, so it could only ever fail off-CI.
+          #
+          # It also bought nothing measurable. This repo's own numbers
+          # (PERFORMANCE.md "BLAS Acceleration") put OpenBLAS at 0.9-1.0x —
+          # quantized kernels use ggml's SIMD paths, not BLAS — and
+          # LEARNINGS.md already states BLAS is minimal-benefit here. So the
+          # fix is to drop the dependency, not to bundle it. LLAMAFILE's
+          # tinyBLAS stays on and needs no external library.
+          #
+          # If large-encoder BLAS (bge-m3, multilingual-e5-large — the case
+          # the old comment claimed and never measured) is ever shown to win,
+          # bundle libopenblas.so.0 + its deps into pkg/ rather than
+          # reintroducing an unbundled hard dependency. The
+          # `Verify bundled dependencies` step below enforces that.
+          # ── glibc floor (#42, second issue) ────────────────────────
+          # Built on the runner (Ubuntu 24.04) these needed GLIBC_2.38 /
+          # GLIBCXX_3.4.32, so they refused to start on Ubuntu 22.04, Debian 12
+          # and anything else on glibc <= 2.37 — a second, independent reason a
+          # user saw a startup failure, distinct from the OpenBLAS one.
+          #
+          # manylinux_2_28 is AlmaLinux 8: glibc 2.28, with a modern gcc-toolset
+          # so C++17 is still available. That covers Ubuntu 20.04+, Debian 11+,
+          # RHEL 8+. `Verify bundled dependencies --max-glibc` enforces it, so a
+          # future base-image change cannot silently raise the floor again.
+          - name: linux-x86_64
+            os: ubuntu-latest
+            container: quay.io/pypa/manylinux_2_28_x86_64
+            max_glibc: "2.28"
+            cmake_args: >-
+              -DGGML_NATIVE=OFF
+              -DGGML_BLAS=OFF
+              -DGGML_LLAMAFILE=ON
+            binaries: crispembed crispembed-server crispembed-quantize
+            lib: libcrispembed.so
+            archive: crispembed-linux-x86_64.tar.gz
+
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            # BLAS off for the same reason as the x86_64 leg: the arm64
+            # tarball carried the identical unbundled libopenblas.so.0
+            # dependency and was equally unlaunchable off-CI. Keep LLAMAFILE
+            # off on arm64 too — its tinyBLAS x86 SIMD paths don't have NEON
+            # parity, and stock ggml-cpu's NEON path is already well-tuned.
+            #
+            # GGML_CPU_ARM_ARCH pins what -mcpu=native was already resolving
+            # to on the Neoverse-N1 runners (armv8.2-a + FP16 + dotprod), so
+            # this is a determinism fix, not a floor change: it keeps the
+            # dotprod quant kernels while making the artifact independent of
+            # which arm host built it (an SVE/SME-capable runner would
+            # otherwise emit instructions Neoverse-N1 and Cortex-A cannot run).
+            container: quay.io/pypa/manylinux_2_28_aarch64
+            max_glibc: "2.28"
+            cmake_args: >-
+              -DGGML_NATIVE=OFF
+              -DGGML_CPU_ARM_ARCH=armv8.2-a+fp16+dotprod
+              -DGGML_BLAS=OFF
+              -DGGML_LLAMAFILE=OFF
+            binaries: crispembed crispembed-server crispembed-quantize
+            lib: libcrispembed.so
+            archive: crispembed-linux-arm64.tar.gz
+
+          - name: macos-arm64
+            os: macos-latest
+            # No GGML_CPU_ARM_ARCH here: Apple clang targeting arm64-apple
+            # already defaults to an M1-class baseline (FP16 + dotprod), and
+            # -march=armv8… is not the flag spelling clang wants on Darwin.
+            # NATIVE=OFF is still required — a future M4 runner would probe
+            # SME in and break every M1/M2/M3 user.
+            cmake_args: >-
+              -DGGML_NATIVE=OFF
+              -DGGML_METAL=ON
+              -DGGML_METAL_EMBED_LIBRARY=ON
+              -DGGML_BLAS=ON
+              -DGGML_BLAS_VENDOR=Apple
+            binaries: crispembed crispembed-server crispembed-quantize
+            lib: libcrispembed.dylib
+            archive: crispembed-macos-arm64.tar.gz
+
+          - name: windows-x86_64
+            os: windows-latest
+            # The leg #41 was filed against. MSVC + GGML_NATIVE is the worst
+            # case of the lot: FindSIMD.cmake runs an AVX-512 probe binary on
+            # the runner and, when it succeeds, compiles the whole CPU backend
+            # with /arch:AVX512 — which no current Intel consumer CPU can run.
+            cmake_args: >-
+              -DGGML_NATIVE=OFF
+              -DGGML_BLAS=OFF
+            binaries: crispembed.exe crispembed-server.exe crispembed-quantize.exe
+            lib: crispembed.dll
+            archive: crispembed-windows-x86_64.zip
+
+    steps:
+      # Inside a container the workspace is owned by a different uid than the
+      # one git runs as, so git refuses to touch it ("dubious ownership") and
+      # the submodule checkout fails. Must precede actions/checkout.
+      - name: Trust the workspace (container builds)
+        if: matrix.container != ''
+        run: git config --global --add safe.directory '*'
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build deps (Linux)
+        # patchelf only — used at package time to rewrite RUNPATH to $ORIGIN.
+        # The manylinux image already ships it, and is AlmaLinux (no apt, no
+        # sudo), so this is only for a Linux leg running on the bare runner.
+        #
+        # libopenblas-dev is deliberately NOT installed any more. It used to be,
+        # so the GGML_BLAS=ON probe would succeed; the effect was that the
+        # runner could link something the shipped archive did not carry
+        # (SubtitleEdit#13205). With it absent, a re-enabled GGML_BLAS fails
+        # loudly at configure time on CI instead of quietly producing a tarball
+        # that exits 127 on every user's machine.
+        if: runner.os == 'Linux' && matrix.container == ''
+        run: sudo apt-get update && sudo apt-get install -y patchelf
+
+      # The manylinux images carry patchelf and a gcc-toolset, but no cmake, and
+      # `python`/`python3` are pyenv shims rather than a system interpreter.
+      # Record what we actually got: if the base image ever changes toolchain,
+      # this is the line that explains the resulting build.
+      - name: Prepare manylinux toolchain
+        if: matrix.container != ''
+        run: |
+          set -euo pipefail
+          if ! command -v cmake >/dev/null 2>&1; then
+              # AlmaLinux 8's cmake is 3.26, comfortably above our 3.14 floor.
+              # pip is the fallback because the image's python3 is not
+              # guaranteed to have it.
+              dnf install -y cmake >/dev/null 2>&1 \
+                || python3 -m pip install --no-cache-dir cmake
+          fi
+          command -v patchelf >/dev/null 2>&1 || dnf install -y patchelf
+          echo "gcc     : $(gcc --version | head -1)"
+          echo "g++     : $(g++ --version | head -1)"
+          echo "cmake   : $(cmake --version | head -1)"
+          echo "patchelf: $(patchelf --version)"
+          echo "glibc   : $(ldd --version | head -1)"
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCRISPEMBED_BUILD_SHARED=ON
+          ${{ matrix.cmake_args }}
+
+      # Fails the release if the configured tree targets the builder's CPU
+      # instead of a fixed baseline (#41). Cheap, and it catches the case a
+      # test suite cannot: CI has no machine that lacks the extension.
+      # `python3` on Linux/macOS: the manylinux image has no bare `python`.
+      - name: Verify portable CPU baseline
+        run: ${{ runner.os == 'Windows' && 'python' || 'python3' }} scripts/check-cpu-baseline.py build
+
+      - name: Build
+        run: cmake --build build --config Release -j4
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p pkg
+          for bin in ${{ matrix.binaries }}; do
+            cp build/$bin pkg/ 2>/dev/null || true
+          done
+          cp -P build/${{ matrix.lib }}* pkg/ 2>/dev/null || true
+          # macOS naming puts the version BEFORE the extension
+          # (libcrispembed.0.dylib, libcrispembed.0.4.0.dylib), so the
+          # glob above — which expects `<basename>.<ext>.<version>` like
+          # Linux's libfoo.so.0.4.0 — only catches the unversioned
+          # symlink. Result before this line: libcrispembed.dylib lands
+          # in the tarball as a DANGLING symlink with no target, breaking
+          # every downstream consumer that links against it (crispembed-sys
+          # try_prebuilt, the CrispSorter macOS bundle, etc.). This
+          # second cp catches the versioned dylibs that cmake emits via
+          # `set_target_properties(... VERSION ... SOVERSION ...)`.
+          if [ "${{ runner.os }}" = "macOS" ]; then
+              cp -P build/libcrispembed.*.dylib pkg/ 2>/dev/null || true
+          fi
+          # libcrispembed references @rpath/libggml-*.dylib (or .so) for
+          # backend libs that are built shared alongside it. Bundle them
+          # into the same flat tarball so downstream consumers (Rust
+          # crispembed-sys, Tauri/Flutter apps) get a self-contained
+          # deliverable. `-P` preserves SOVERSION symlinks.
+          find build/ggml/src -name 'libggml*' \( -type f -o -type l \) \
+            -exec cp -P {} pkg/ \; 2>/dev/null || true
+          # Headers — let binding authors extend the FFI without
+          # vendoring the whole CrispEmbed repo.
+          mkdir -p pkg/include
+          cp src/crispembed.h pkg/include/ 2>/dev/null || true
+          cp ggml/include/*.h pkg/include/ 2>/dev/null || true
+          cp README.md LICENSE pkg/ 2>/dev/null || true
+
+          # Patch RPATH so the tarball is self-contained. The build-tree
+          # RPATH points at absolute paths on the GitHub runner (e.g.,
+          # /home/runner/work/CrispEmbed/CrispEmbed/build/ggml/src), which
+          # are nonsense after extraction on a user's machine. Rewrite to
+          # $ORIGIN (Linux) / @loader_path (macOS) so libs find siblings
+          # in the same directory without LD_LIBRARY_PATH.
+          if [ "${{ runner.os }}" = "Linux" ]; then
+              for f in pkg/libcrispembed.so* pkg/libggml*.so* \
+                       pkg/crispembed pkg/crispembed-server pkg/crispembed-quantize; do
+                  [ -f "$f" ] || continue
+                  # readonly symlinks (libcrispembed.so → .so.0 → .so.X.Y.Z)
+                  # don't need patching — only the real file does. patchelf
+                  # errors on symlinks, so skip them.
+                  [ -L "$f" ] && continue
+                  patchelf --set-rpath '$ORIGIN' "$f" 2>/dev/null || true
+              done
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+              # On macOS the dylibs already link via @rpath/... install names.
+              # The runner's RPATH was set to the build dir; rewrite to
+              # @loader_path so siblings resolve correctly.
+              for f in pkg/libcrispembed.dylib pkg/libcrispembed.*.dylib \
+                       pkg/libggml*.dylib; do
+                  [ -f "$f" ] || continue
+                  [ -L "$f" ] && continue
+                  # Strip any existing rpaths (build-time absolute paths),
+                  # then add the relative one. `|| true` because each call
+                  # may fail if the path isn't present, which is fine.
+                  current_rpaths=$(otool -l "$f" | awk '/LC_RPATH/{found=1} found && /path /{print $2; found=0}')
+                  for rp in $current_rpaths; do
+                      install_name_tool -delete_rpath "$rp" "$f" 2>/dev/null || true
+                  done
+                  install_name_tool -add_rpath '@loader_path' "$f" 2>/dev/null || true
+              done
+              for bin in pkg/crispembed pkg/crispembed-server pkg/crispembed-quantize; do
+                  [ -f "$bin" ] || continue
+                  current_rpaths=$(otool -l "$bin" | awk '/LC_RPATH/{found=1} found && /path /{print $2; found=0}')
+                  for rp in $current_rpaths; do
+                      install_name_tool -delete_rpath "$rp" "$bin" 2>/dev/null || true
+                  done
+                  install_name_tool -add_rpath '@loader_path' "$bin" 2>/dev/null || true
+              done
+              # Make each dylib's SONAME a REAL file. cmake emits
+              # libX.<M>.<m>.<p>.dylib (real) + libX.<M>.dylib + libX.dylib
+              # (symlinks), but every install-name is @rpath/libX.<M>.dylib.
+              # CocoaPods DEREFERENCES symlinks when it embeds vendored_libraries
+              # (Flutter macOS), so a symlink-only SONAME is dropped and the app
+              # aborts at launch with "Library not loaded: @rpath/libX.<M>.dylib".
+              # Promote the real file to its SONAME so it survives embedding, and
+              # keep libX.dylib as a symlink for build-time `-l` linkers (Rust
+              # crispembed-sys). The fully-versioned filename is retired.
+              for f in pkg/libcrispembed.*.dylib pkg/libggml*.dylib; do
+                  [ -e "$f" ] || continue
+                  [ -L "$f" ] && continue                       # real files only
+                  soname=$(basename "$(otool -D "$f" 2>/dev/null | tail -1)")
+                  case "$soname" in lib*.dylib) ;; *) continue ;; esac
+                  [ "$(basename "$f")" = "$soname" ] && continue  # already SONAME
+                  stem=${soname%.*}; stem=${stem%.*}            # libX
+                  rm -f "pkg/$soname"
+                  mv -f "$f" "pkg/$soname"
+                  ln -sf "$soname" "pkg/$stem.dylib"
+              done
+              echo "macOS tarball dylib layout:"; ls -l pkg/*.dylib || true
+          fi
+
+          tar -czf ${{ matrix.archive }} -C pkg .
+
+      # Every DT_NEEDED entry must be either bundled in pkg/ or part of a base
+      # glibc system. An unbundled one makes the loader fail before main(), so
+      # the binary exits 127 having printed nothing — SubtitleEdit#13205, where
+      # libggml-blas.so.0 needed libopenblas.so.0 that the archive never
+      # shipped. The runner has it installed, so this can only be caught by
+      # inspecting the package, never by running it here.
+      # --max-glibc also pins the FLOOR, not just the bundling: the whole point
+      # of the manylinux container is that the artifact stays runnable on older
+      # distros, and that guarantee needs to be checked rather than assumed.
+      - name: Verify bundled dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: >
+          python3 scripts/check-bundled-deps.py pkg
+          ${{ matrix.max_glibc && format('--max-glibc {0}', matrix.max_glibc) || '' }}
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path pkg
+          foreach ($bin in "${{ matrix.binaries }}".Split(" ")) {
+            Copy-Item "build/Release/$bin" pkg/ -ErrorAction SilentlyContinue
+          }
+          Copy-Item "build/Release/${{ matrix.lib }}" pkg/ -ErrorAction SilentlyContinue
+          # Import library for MSVC link-time consumers (Rust crispembed-sys
+          # probes for crispembed.lib; without it downstream crates can only
+          # LoadLibrary at runtime).
+          Copy-Item "build/Release/crispembed.lib" pkg/ -ErrorAction SilentlyContinue
+          # ggml backend DLLs land in build/bin/Release/ on Windows MSVC,
+          # NOT build/ggml/src/, because ggml/CMakeLists.txt sets
+          # CMAKE_RUNTIME_OUTPUT_DIRECTORY=${CMAKE_BINARY_DIR}/bin and CMake
+          # classifies .dll as RUNTIME (vs .so/.dylib as LIBRARY on Unix).
+          # Without these DLLs alongside crispembed.dll, crispembed.dll
+          # fails to load at runtime — its imports reference ggml.dll,
+          # ggml-base.dll, ggml-cpu.dll. Search both locations defensively
+          # in case the layout shifts on a future ggml/cmake bump.
+          Get-ChildItem -Path "build" -Recurse -Filter "ggml*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
+            Copy-Item $_.FullName pkg/ -Force
+          }
+          # Import libs (.lib) are ARCHIVE outputs and stay next to each
+          # ggml target under build/ggml/src/Release/.
+          Get-ChildItem -Path "build/ggml" -Recurse -Filter "ggml*.lib" -ErrorAction SilentlyContinue | ForEach-Object {
+            Copy-Item $_.FullName pkg/ -Force
+          }
+          New-Item -ItemType Directory -Force -Path pkg/include
+          Copy-Item "src/crispembed.h" pkg/include/ -ErrorAction SilentlyContinue
+          Get-ChildItem "ggml/include/*.h" -ErrorAction SilentlyContinue | ForEach-Object {
+            Copy-Item $_.FullName pkg/include/
+          }
+          Copy-Item README.md, LICENSE pkg/ -ErrorAction SilentlyContinue
+          Compress-Archive -Path pkg/* -DestinationPath ${{ matrix.archive }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.archive }}
+
+      - name: Upload to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: CrispEmbed ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: false
+          files: ${{ matrix.archive }}
+
+  # ─── Linux x86_64 + CUDA ──────────────────────────────────────────────
+  # Self-contained tarball with libcrispembed.so + libggml-cuda.so + the
+  # standard CPU backend libs. End users must have a matching CUDA driver
+  # (12.x) on the host; we don't ship cudart/cublas because Linux dev
+  # boxes that consume a -cuda tarball normally have CUDA installed
+  # system-wide.
+  build-linux-x86_64-cuda:
+    name: Build linux-x86_64-cuda
+    runs-on: ubuntu-latest
+    env:
+      CUDA_VERSION: "12.8.0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install patchelf
+        run: sudo apt-get update && sudo apt-get install -y patchelf
+
+      - name: Install CUDA Toolkit ${{ env.CUDA_VERSION }}
+        uses: Jimver/cuda-toolkit@v0.2.35
+        with:
+          cuda: ${{ env.CUDA_VERSION }}
+          method: 'network'
+          # Same package mapping CrispASR uses — `cuda-nvcc`/`cudart`/
+          # `nvrtc-dev` come from the cuda- prefix; cuBLAS dev headers
+          # live under the lib- prefix and need `non-cuda-sub-packages`.
+          sub-packages: '["nvcc", "cudart", "nvrtc-dev"]'
+          non-cuda-sub-packages: '["libcublas-dev"]'
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: linux-x86_64-cuda
+          variant: ccache
+          max-size: 3G
+
+      # GGML_NATIVE=OFF — the CUDA tarball still contains ggml-cpu, and this
+      # runner is the same heterogeneous ubuntu-latest pool as the cpu leg (#41).
+      # ggml 0.17 calls the CUDA *driver* API (cuGetErrorString), which 0.10.2
+      # did not, so libggml-cuda now has to link libcuda. A build machine has
+      # no driver installed, which is exactly what the toolkit's stub at
+      # lib64/stubs/libcuda.so is for — but CMake only finds it if the stubs
+      # directory is on the library path.
+      #
+      # Without this the link dies with "undefined reference to
+      # `cuGetErrorString'" and the whole leg fails at the very end of a ~1 h
+      # build. v0.17.3 shipped with NO Linux CUDA archive for this reason.
+      # Fail loudly here if the stub is missing rather than an hour later.
+      - name: Stage the CUDA driver stub
+        run: |
+          set -euo pipefail
+          stub=$(find "${CUDA_PATH:-/usr/local/cuda}" -name 'libcuda.so*' -path '*stubs*' 2>/dev/null | head -1)
+          if [ -z "$stub" ]; then
+              echo "No libcuda stub under ${CUDA_PATH:-/usr/local/cuda}; ggml 0.17 cannot link the CUDA driver API." >&2
+              exit 1
+          fi
+          # The shipped stub is named libcuda.so, but its SONAME — and so the
+          # DT_NEEDED that lands in libggml-cuda.so — is libcuda.so.1. When ld
+          # then links the executables it looks for a FILE called libcuda.so.1
+          # and does not find one, giving
+          #   "libcuda.so.1 ... not found (try using -rpath or -rpath-link)"
+          # followed by undefined references to cuMemCreate/cuMemAddressReserve.
+          # Stage a private copy with both names so the SONAME resolves.
+          stubdir="${RUNNER_TEMP:-/tmp}/cuda-stubs"
+          mkdir -p "$stubdir"
+          cp -f "$stub" "$stubdir/libcuda.so"
+          ln -sf libcuda.so "$stubdir/libcuda.so.1"
+          echo "CUDA_STUB_DIR=$stubdir" >> "$GITHUB_ENV"
+          echo "driver stub: $stub -> $stubdir (libcuda.so + libcuda.so.1)"
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCRISPEMBED_BUILD_SHARED=ON
+          -DGGML_NATIVE=OFF
+          -DGGML_CUDA=ON
+          -DGGML_BLAS=OFF
+          -DCMAKE_LIBRARY_PATH="$CUDA_STUB_DIR"
+          -DCMAKE_EXE_LINKER_FLAGS="-Wl,-rpath-link,$CUDA_STUB_DIR"
+          -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-rpath-link,$CUDA_STUB_DIR"
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache
+
+      - name: Verify portable CPU baseline
+        run: python scripts/check-cpu-baseline.py build
+
+      - name: Build
+        run: cmake --build build --config Release -j4
+
+      - name: Package
+        run: |
+          mkdir -p pkg
+          for bin in crispembed crispembed-server crispembed-quantize; do
+            cp build/$bin pkg/ 2>/dev/null || true
+          done
+          cp -P build/libcrispembed.so* pkg/ 2>/dev/null || true
+          find build/ggml/src -name 'libggml*' \( -type f -o -type l \) \
+            -exec cp -P {} pkg/ \; 2>/dev/null || true
+          mkdir -p pkg/include
+          cp src/crispembed.h pkg/include/ 2>/dev/null || true
+          cp ggml/include/*.h pkg/include/ 2>/dev/null || true
+          cp README.md LICENSE pkg/ 2>/dev/null || true
+          # Patch RPATH so libggml-cuda.so finds its siblings without
+          # LD_LIBRARY_PATH — in this (slim) archive the CUDA runtime itself
+          # still comes from the host and resolves via the standard linker
+          # search path.
+          for f in pkg/libcrispembed.so* pkg/libggml*.so* \
+                   pkg/crispembed pkg/crispembed-server pkg/crispembed-quantize; do
+              [ -f "$f" ] || continue
+              [ -L "$f" ] && continue
+              patchelf --set-rpath '$ORIGIN' "$f" 2>/dev/null || true
+          done
+          tar -czf crispembed-linux-x86_64-cuda.tar.gz -C pkg .
+
+      # ── Second archive: the same build, plus the CUDA runtime ──────────
+      # The slim tarball above needs a CUDA *toolkit* on the host, not merely
+      # a driver: libggml-cuda.so hard-needs libcudart/libcublas, and
+      # libggml.so hard-needs libggml-cuda.so, so on a driver-only machine the
+      # loader kills the process at startup — exit 127, no output, and no
+      # degrading to the CPU backend (#42). The Windows CUDA zip has always
+      # bundled cudart/cublas, which is why this only ever bit Linux.
+      #
+      # The slim name is kept as-is for continuity (Subtitle Edit and others
+      # pin these filenames); this adds a self-contained sibling instead of
+      # changing what an existing pin resolves to.
+      - name: Package (CUDA runtime bundled)
+        run: |
+          set -euo pipefail
+          rm -rf pkg-bundled && cp -a pkg pkg-bundled
+
+          # Copy the CUDA runtime closure. `ldd` prints the FULL transitive
+          # set, so libcublasLt (and libnvJitLink, which libcublasLt pulls in
+          # on 12.x) come along without being named here — a hardcoded list
+          # would silently rot on the next CUDA bump.
+          #
+          # libcuda.so.1 is deliberately EXCLUDED: that one is the driver.
+          # Shipping it would pin users to whatever driver this runner had and
+          # break them on every other one.
+          cuda_lib_count=0
+          while read -r lib; do
+              [ -n "$lib" ] || continue
+              base=$(basename "$lib")
+              case "$base" in
+                  libcuda.so*) continue ;;          # driver — never bundle
+                  libcu*|libnv*) ;;                 # CUDA runtime — bundle
+                  *) continue ;;
+              esac
+              # -L dereferences the SONAME symlink so the real file lands under
+              # the name the loader will look for.
+              cp -Lf "$lib" "pkg-bundled/$base"
+              cuda_lib_count=$((cuda_lib_count + 1))
+          done < <(ldd pkg-bundled/libggml-cuda.so* 2>/dev/null | awk '/=>/ {print $3}' | grep '^/' | sort -u)
+          echo "bundled $cuda_lib_count CUDA runtime librar(ies)"
+
+          # DT_RUNPATH is NOT transitive: libcublas.so.12 resolving
+          # libcublasLt.so.12 does not inherit libggml-cuda.so's RUNPATH, so
+          # each bundled CUDA lib needs its own $ORIGIN. (Same thing the
+          # manylinux/PyTorch wheels do to their vendored CUDA libs.)
+          for f in pkg-bundled/libcu*.so* pkg-bundled/libnv*.so*; do
+              [ -f "$f" ] || continue
+              [ -L "$f" ] && continue
+              patchelf --set-rpath '$ORIGIN' "$f" 2>/dev/null || true
+          done
+
+          # NVIDIA's EULA permits redistributing these runtime components with
+          # an application, and requires the terms to travel with them.
+          #
+          # The `cp "$CUDA_PATH/EULA.txt"` this replaces silently did nothing:
+          # the sub-package install (nvcc/cudart/cublas) does not lay down
+          # EULA.txt at the toolkit root, so v0.17.2 shipped the NOTICE alone
+          # while the docs claimed both. Search the likely locations, and say
+          # out loud which way it went instead of hiding it behind `|| true`.
+          eula=""
+          for cand in "$CUDA_PATH/EULA.txt" "$CUDA_PATH/doc/EULA.txt" \
+                      "$CUDA_PATH/share/doc/EULA.txt" /usr/local/cuda/EULA.txt \
+                      /usr/share/doc/cuda-toolkit*/EULA.txt; do
+              [ -f "$cand" ] && { eula="$cand"; break; }
+          done
+          if [ -z "$eula" ]; then
+              eula=$(find /usr/local/cuda* /usr/share/doc -maxdepth 3 -name 'EULA*' -type f 2>/dev/null | head -1)
+          fi
+          if [ -n "$eula" ]; then
+              cp "$eula" pkg-bundled/NVIDIA-EULA.txt
+              echo "bundled NVIDIA EULA text from $eula"
+          else
+              echo "NOTE: no EULA.txt found in this CUDA install; NVIDIA-NOTICE.txt carries the terms by reference"
+          fi
+          {
+            echo "This archive bundles NVIDIA CUDA runtime libraries"
+            echo "(libcudart / libcublas / libcublasLt and their dependencies),"
+            echo "redistributed under the NVIDIA CUDA Toolkit End User License"
+            echo "Agreement: https://docs.nvidia.com/cuda/eula/index.html"
+            echo
+            echo "They are NVIDIA's, not CrispEmbed's, and are covered by that"
+            echo "agreement rather than by CrispEmbed's LICENSE."
+            echo
+            echo "The NVIDIA kernel driver library (libcuda.so.1) is NOT included:"
+            echo "it must match the driver installed on the host."
+          } > pkg-bundled/NVIDIA-NOTICE.txt
+
+          tar -czf crispembed-linux-x86_64-cuda-bundled.tar.gz -C pkg-bundled .
+          ls -la crispembed-linux-x86_64-cuda*.tar.gz
+
+      # Both archives, each against its own declared contract. The slim one is
+      # allowed to want the CUDA runtime from the host; the bundled one may
+      # only want the driver. Encoding it here is what turns "CUDA users
+      # normally have CUDA installed" from an assumption into a checked fact.
+      - name: Verify bundled dependencies (both CUDA archives)
+        run: |
+          set -euo pipefail
+          echo "── slim: host must provide the CUDA toolkit runtime ──"
+          python3 scripts/check-bundled-deps.py pkg \
+              --allow 'libcuda.so.*' --allow 'libcudart.so.*' \
+              --allow 'libcublas.so.*' --allow 'libcublasLt.so.*' \
+              --allow 'libnv*.so.*'
+          echo
+          echo "── bundled: host must provide only the driver ──"
+          python3 scripts/check-bundled-deps.py pkg-bundled --allow 'libcuda.so.*'
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64-cuda
+          path: |
+            crispembed-linux-x86_64-cuda.tar.gz
+            crispembed-linux-x86_64-cuda-bundled.tar.gz
+
+      - name: Upload to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: CrispEmbed ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: false
+          files: |
+            crispembed-linux-x86_64-cuda.tar.gz
+            crispembed-linux-x86_64-cuda-bundled.tar.gz
+
+  # ─── Windows x86_64 + CUDA ────────────────────────────────────────────
+  # Bundles cudart64_12.dll + cublas64_12.dll alongside the CrispEmbed
+  # DLLs, so the zip is plug-and-play even if the user doesn't have CUDA
+  # installed system-wide (common on Windows dev boxes).
+  build-windows-x86_64-cuda:
+    name: Build windows-x86_64-cuda
+    # Pin to windows-2022 (VS 2022 / MSVC 14.4x). `windows-latest` now ships
+    # Visual Studio 18 (MSVC 14.51), which CUDA 12.8's nvcc rejects:
+    #   host_config.h(170): fatal error C1189: unsupported Microsoft Visual
+    #   Studio version! Only the versions between 2017 and 2022 are supported.
+    # The non-CUDA windows legs don't invoke nvcc, so they stay on
+    # windows-latest; only this leg needs the CUDA-supported host compiler.
+    runs-on: windows-2022
+    env:
+      CUDA_VERSION: "12.8.0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install CUDA Toolkit ${{ env.CUDA_VERSION }}
+        uses: Jimver/cuda-toolkit@v0.2.35
+        with:
+          cuda: ${{ env.CUDA_VERSION }}
+          method: 'network'
+          # Sub-packages needed for ggml-cuda's full toolchain on Windows:
+          #   visual_studio_integration — .props/.targets so MSBuild can
+          #     find the CUDA toolset (without this, configure fails with
+          #     "No CUDA toolset found")
+          #   cublas + cublas_dev — runtime DLL and import lib; CMake's
+          #     find_package(CUDAToolkit) populates CUDA::cublas from the
+          #     dev pkg (without it, target_link_libraries fails at
+          #     ggml/src/ggml-cuda/CMakeLists.txt:175 with "Target
+          #     'ggml-cuda' links to: CUDA::cublas but the target was
+          #     not found")
+          #   nvrtc + nvrtc_dev — needed by ggml-cuda's runtime kernel
+          #     compilation path
+          #   nvtx + cuda_profiler_api — referenced by ggml-cuda even
+          #     when not actively used; Jimver doesn't install them
+          #     transitively
+          # Mirror of CrispASR's working list.
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "nvrtc", "nvrtc_dev", "nvtx", "cuda_profiler_api", "visual_studio_integration"]'
+
+      # Set up the MSVC dev environment robustly (vswhere-based) so nvcc finds
+      # cl.exe + ninja. The previous hardcoded `call ...\2022\Enterprise\
+      # vcvars64.bat` failed on the windows-2025 runner with "The system cannot
+      # find the path specified" (different VS edition/path). ilammy/msvc-dev-cmd
+      # locates VS automatically and exports the dev env for later steps.
+      - name: Set up MSVC dev environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # ccache caches nvcc + cl object compilation ACROSS runs (persisted via
+      # the GitHub Actions cache). The first run after a cache miss is still a
+      # full ~hour build (5 GPU arches × the full engine set), but subsequent
+      # releases reuse cached objects → minutes. Launcher flags below wrap both
+      # the C++ and CUDA compilers. Release build = no PDBs, so ccache caches cl
+      # cleanly.
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: windows-x86_64-cuda
+          variant: ccache
+          max-size: 3G
+
+      # Build with the Ninja generator: nvcc finds cl.exe directly and CMake
+      # never needs the CUDA MSBuild "toolset" (the VS generator's
+      # enable_language(CUDA) fails with "No CUDA toolset found" on hosted
+      # runners). Ninja's flat layout (build\bin) is handled in Package.
+      # Build at -j NUMBER_OF_PROCESSORS: this build is compile-bound, not
+      # RAM-bound — v0.11.7 finished at -j4 (~67 min) without OOM, while an
+      # -j2 cap was actually slower (~85 min) by halving throughput. With the
+      # ccache above warmed, most TUs are cache hits anyway (negligible RAM).
+      - name: Configure + build (Ninja)
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCRISPEMBED_BUILD_SHARED=ON `
+            -DGGML_CUDA=ON `
+            -DGGML_BLAS=OFF `
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache `
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache `
+            -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache `
+            -DCMAKE_CUDA_ARCHITECTURES="75-real;86-real;89-real;120-real;120-virtual" `
+            -DGGML_NATIVE=OFF `
+            -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
+          python scripts/check-cpu-baseline.py build
+          cmake --build build -j $env:NUMBER_OF_PROCESSORS
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path pkg
+          # Ninja's flat layout puts exes + the dll in build\bin (not
+          # build\Release); search recursively so it works regardless of layout.
+          foreach ($pat in "crispembed.exe","crispembed-server.exe","crispembed-quantize.exe","crispembed.dll","crispembed.lib") {
+            Get-ChildItem -Path "build" -Recurse -Filter $pat -ErrorAction SilentlyContinue |
+              Select-Object -First 1 | ForEach-Object { Copy-Item $_.FullName pkg/ -Force }
+          }
+          Get-ChildItem -Path "build" -Recurse -Filter "ggml*.dll" | ForEach-Object {
+              Copy-Item $_.FullName pkg/ -Force
+          }
+          Get-ChildItem -Path "build" -Recurse -Filter "ggml*.lib" | ForEach-Object {
+              Copy-Item $_.FullName pkg/ -Force
+          }
+          # Bundle CUDA runtime DLLs so the zip is self-contained.
+          $cuda_bin = "$env:CUDA_PATH\bin"
+          foreach ($dll in "cudart64_12.dll","cublas64_12.dll","cublasLt64_12.dll") {
+              if (Test-Path "$cuda_bin\$dll") {
+                  Copy-Item "$cuda_bin\$dll" pkg/ -Force
+              }
+          }
+          New-Item -ItemType Directory -Force -Path pkg/include
+          Copy-Item "src/crispembed.h" pkg/include/ -ErrorAction SilentlyContinue
+          Get-ChildItem "ggml/include/*.h" | ForEach-Object {
+              Copy-Item $_.FullName pkg/include/
+          }
+          Copy-Item README.md, LICENSE pkg/ -ErrorAction SilentlyContinue
+          Compress-Archive -Path pkg/* -DestinationPath crispembed-windows-x86_64-cuda.zip
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64-cuda
+          path: crispembed-windows-x86_64-cuda.zip
+
+      - name: Upload to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: CrispEmbed ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: false
+          files: crispembed-windows-x86_64-cuda.zip
+
+  # ─── Windows x86_64 + Vulkan ──────────────────────────────────────────
+  # Lighter-weight than CUDA — uses the system Vulkan loader, no CUDA
+  # toolchain required. Mirrors CrispASR's libcrispasr-*-vulkan layout.
+  build-windows-x86_64-vulkan:
+    name: Build windows-x86_64-vulkan
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: |
+          $ver = (Invoke-RestMethod -Uri "https://vulkan.lunarg.com/sdk/latest.json").windows
+          $url = "https://sdk.lunarg.com/sdk/download/$ver/windows/vulkan_sdk.exe"
+          Invoke-WebRequest -Uri $url -OutFile vulkan_sdk.exe
+          Start-Process -FilePath .\vulkan_sdk.exe `
+              -ArgumentList "--accept-licenses","--default-answer","--confirm-command","install" `
+              -Wait
+          $sdk = Get-ChildItem "C:\VulkanSDK" | Sort-Object Name -Descending | Select-Object -First 1
+          echo "VULKAN_SDK=$sdk" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # GGML_NATIVE=OFF for the same reason as the cpu leg (#41): the vulkan
+      # zip still ships a full CPU backend, used both as a fallback and for
+      # ops the Vulkan backend doesn't implement.
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCRISPEMBED_BUILD_SHARED=ON
+          -DGGML_NATIVE=OFF
+          -DGGML_VULKAN=ON
+          -DGGML_CUDA=OFF
+          -DGGML_BLAS=OFF
+
+      - name: Verify portable CPU baseline
+        run: python scripts/check-cpu-baseline.py build
+
+      - name: Build
+        run: cmake --build build --config Release -j4
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path pkg
+          foreach ($bin in "crispembed.exe","crispembed-server.exe","crispembed-quantize.exe") {
+            Copy-Item "build/Release/$bin" pkg/ -ErrorAction SilentlyContinue
+          }
+          Copy-Item "build/Release/crispembed.dll", "build/Release/crispembed.lib" pkg/ -ErrorAction SilentlyContinue
+          Get-ChildItem -Path "build" -Recurse -Filter "ggml*.dll" | ForEach-Object {
+              Copy-Item $_.FullName pkg/ -Force
+          }
+          Get-ChildItem -Path "build/ggml" -Recurse -Filter "ggml*.lib" | ForEach-Object {
+              Copy-Item $_.FullName pkg/ -Force
+          }
+          New-Item -ItemType Directory -Force -Path pkg/include
+          Copy-Item "src/crispembed.h" pkg/include/ -ErrorAction SilentlyContinue
+          Get-ChildItem "ggml/include/*.h" | ForEach-Object {
+              Copy-Item $_.FullName pkg/include/
+          }
+          Copy-Item README.md, LICENSE pkg/ -ErrorAction SilentlyContinue
+          Compress-Archive -Path pkg/* -DestinationPath crispembed-windows-x86_64-vulkan.zip
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64-vulkan
+          path: crispembed-windows-x86_64-vulkan.zip
+
+      - name: Upload to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: CrispEmbed ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: false
+          files: crispembed-windows-x86_64-vulkan.zip
+
+  build-android:
+    name: Build android-${{ matrix.abi }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Build
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=${{ matrix.abi }} -DANDROID_NATIVE_API_LEVEL=24 \
+            -DCMAKE_BUILD_TYPE=Release -DCRISPEMBED_BUILD_SHARED=ON -DGGML_LLAMAFILE=OFF
+          # Cross-compiling already forces both NATIVE options off, but assert
+          # it rather than assume it (#41).
+          python scripts/check-cpu-baseline.py build
+          # Only the shared lib the plugin needs — not the (host-only) test exes.
+          cmake --build build --target crispembed-shared -j4
+      - name: Package
+        run: tar -czf crispembed-android-${{ matrix.abi }}.tar.gz -C build libcrispembed.so
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-${{ matrix.abi }}
+          path: crispembed-android-${{ matrix.abi }}.tar.gz
+
+      - name: Upload to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: CrispEmbed ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: false
+          files: crispembed-android-${{ matrix.abi }}.tar.gz
+
+  build-ios:
+    name: Build ios-arm64
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Build
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_SYSROOT=$(xcrun --sdk iphoneos --show-sdk-path) \
+            -DCMAKE_C_COMPILER=$(xcrun --sdk iphoneos -f clang) \
+            -DCMAKE_CXX_COMPILER=$(xcrun --sdk iphoneos -f clang++) \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCRISPEMBED_BUILD_SHARED=OFF -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON
+          # Cross-compiling already forces both NATIVE options off, but assert
+          # it rather than assume it (#41).
+          python scripts/check-cpu-baseline.py build
+          # Only the static lib the podspec vendors — building the test exes as
+          # iOS targets fails ("Bundle identifier is missing") under -G Xcode and
+          # just wastes time under Make.
+          cmake --build build --target crispembed -j4
+      - name: Package
+        run: tar -czf crispembed-ios-arm64.tar.gz -C build libcrispembed-static.a
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-arm64
+          path: crispembed-ios-arm64.tar.gz
+
+      - name: Upload to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: CrispEmbed ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: false
+          files: crispembed-ios-arm64.tar.gz
+
+  create-release:
+    name: Create GitHub Release
+    # GPU variants (cuda/vulkan) are best-effort: if a CUDA runner or
+    # Vulkan SDK has a transient failure we still want the CPU release
+    # to publish. `if: always() && !cancelled()` lets the release job
+    # run even when GPU jobs fail, and the file list below tolerates
+    # missing artifacts.
+    needs:
+      - build
+      - build-linux-x86_64-cuda
+      - build-windows-x86_64-cuda
+      - build-windows-x86_64-vulkan
+      - build-android
+      - build-ios
+    if: always() && !cancelled()
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+
+      - name: Create release
+        # Tag pushes only. A workflow_dispatch dry run must never publish —
+        # github.ref_name is the BRANCH there, so without this it would cut a
+        # release named after the branch.
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: CrispEmbed ${{ github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: false
+          files: |
+            dist/linux-x86_64/*.tar.gz
+            dist/linux-x86_64-cuda/*.tar.gz
+            dist/linux-arm64/*.tar.gz
+            dist/macos-arm64/*.tar.gz
+            dist/windows-x86_64/*.zip
+            dist/windows-x86_64-cuda/*.zip
+            dist/windows-x86_64-vulkan/*.zip
+            dist/android-arm64-v8a/*.tar.gz
+            dist/android-armeabi-v7a/*.tar.gz
+            dist/ios-arm64/*.tar.gz

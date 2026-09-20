@@ -1,0 +1,227 @@
+name: jarvisol
+description: "Assistant Jarvisol - AI powered assistant"
+
+publish_to: 'none'
+
+version: 0.9.9+79
+
+environment:
+  sdk: '>=3.5.0 <4.0.0'
+  flutter: ">=3.24.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # Localization runtime + Flutter's bundled Material / Cupertino / Widget
+  # delegates for the 80+ built-in locales.
+  flutter_localizations:
+    sdk: flutter
+
+  # UI and state management
+  cupertino_icons: ^1.0.6
+  # Pinned by flutter SDK; use a loose range so other transitive deps don't
+  # force us onto an older version.
+  material_color_utilities: ">=0.8.0 <0.14.0"
+  flutter_riverpod: ^3.0.0
+  go_router: ^17.3.0
+
+  # Audio handling
+  just_audio: ^0.10.5
+  # Already a transitive dep via just_audio; pulled up to a direct
+  # dep so `lib/main.dart::_configureAudioSession()` can import it
+  # without the depend_on_referenced_packages lint.
+  audio_session: ^0.2.3
+  # just_audio has no native Windows/Linux implementation; libmpv-backed
+  # plugin fills that gap. macOS/iOS/Android keep the official backend.
+  just_audio_media_kit: ^2.1.0
+  media_kit_libs_windows_audio: any
+  media_kit_libs_linux: any
+  record: ^6.2.0
+  path_provider: ^2.1.1
+  permission_handler: ^12.0.3
+
+  # 64-bit integer arithmetic that works on both native and dart2js.
+  # Already a transitive dep; promoted to direct for spread_spectrum_watermark.dart.
+  fixnum: ^1.1.0
+
+  # File handling
+  file_picker: ">=11.0.2 <13.0.0"
+  path: ^1.8.3
+
+  # CLI (bin/crisperweaver.dart) command parsing — already transitive,
+  # declared direct because the CLI imports it.
+  args: ^2.4.0
+
+  # Network and downloads
+  http: ^1.1.2
+  dio: ^5.4.0
+  url_launcher: ^6.2.2
+
+  # OpenAI-compatible HTTP server (Settings → "Server mode") — lets
+  # external scripts drive CrisperWeaver's local ASR + TTS + translate
+  # services over /v1/audio/transcriptions, /v1/audio/speech,
+  # /v1/translations. shelf was already a transitive dep via just_audio
+  # / dio; pulled to direct so we can build the routes ourselves.
+  shelf: ^1.4.1
+  shelf_router: ^1.1.4
+
+  # Native integration
+  ffi: ^2.1.0
+
+  # On-device speech recognition via ggml (Whisper, Qwen3-ASR, FastConformer, ...)
+  crispasr:
+    path: ../CrispASR/flutter/crispasr
+
+  # On-device text embeddings via ggml (§5.25.2 semantic search)
+  crispembed:
+    path: ../CrispEmbed/flutter/crispembed
+
+  # On-device MP3 / AAC-LC / Opus encode + decode (clean-room codec suite),
+  # so compressed export/import no longer needs an external ffmpeg binary.
+  glint_audio:
+    path: ../glint/bindings/dart
+
+  # Utility
+  uuid: ^4.3.3
+  shared_preferences: ^2.2.2
+  intl: ">=0.19.0 <0.21.0"
+
+  # Additional required dependencies
+  share_plus: ^13.0.0
+  package_info_plus: ^10.1.0
+  device_info_plus: ^13.0.0
+
+  # For model downloads and verification - ENHANCED
+  crypto: ^3.0.3
+  archive: ^4.0.9
+  syncfusion_flutter_pdf: ^28.2.9
+  
+  # Progress indicators and animations
+  percent_indicator: ^4.2.3
+  
+  # Better HTTP handling
+  retry: ^3.1.2
+
+  # Web APIs (fetch, etc.) for WASM interop on Flutter web
+  web: ^1.1.0
+
+  # Inbound share: receive audio files from other apps via the OS share
+  # sheet (Android) or document picker (iOS/macOS).
+  receive_sharing_intent: ^1.8.0
+
+  # Drop target — desktop drag-and-drop of audio files onto the app
+  # window. macOS / Windows / Linux are fully supported; mobile is a
+  # no-op (DnD across apps isn't a thing on iOS/Android).
+  desktop_drop: ^0.7.0
+
+  # §5.1.11 — desktop-only global hotkey support. Registers a
+  # system-level shortcut so the user can push-to-transcribe or
+  # toggle recording without bringing the app window to the
+  # foreground. iOS / Android lack a global-shortcut surface;
+  # the service treats those platforms as no-ops.
+  hotkey_manager: ^0.2.3
+  youtube_explode_dart: ^3.1.0
+  flutter_markdown: ^0.7.7+1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  build_runner: ^2.4.7
+  json_annotation: ^4.8.1
+  json_serializable: ^6.7.1
+  flutter_launcher_icons: ^0.14.4
+
+  # For FFI bindings (if needed for desktop)
+  ffigen: ^20.1.1
+
+  # Windows MSIX packaging. `flutter pub run msix:create` after a
+  # release build wraps build/windows/x64/runner/Release/ in an
+  # MSIX, declaring file-type associations from msix_config below
+  # so Explorer learns "Open With → CrisperWeaver" for audio +
+  # subtitle files.
+  msix: ^3.16.7
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  remove_alpha_ios: true
+  macos:
+    generate: true
+  image_path: "assets/images/app_logo.png"
+  min_sdk_android: 21
+  adaptive_icon_background: "#1d325f"
+  adaptive_icon_foreground: "assets/images/app_logo.png"
+
+# Pin the Linux implementation of `record` to a version that matches the
+# current platform interface contract — the transitively-resolved 0.7.2 is
+# too old and breaks even when we're building for macOS.
+dependency_overrides:
+  record_linux: ^1.3.0
+  hotkey_manager_windows:
+    path: packages/hotkey_manager_windows
+
+flutter:
+  uses-material-design: true
+  # Codegen for ARB → Dart localizations. Configured via l10n.yaml.
+  generate: true
+
+  assets:
+    - assets/models/
+    - assets/images/
+    - assets/licenses/
+    - assets/vad/
+    # espeak-ng phoneme tables — kokoro's in-process phonemizer needs
+    # them at runtime. Shipped as one tarball asset because Flutter's
+    # pubspec `assets:` doesn't bundle subdirectories recursively, and
+    # the espeak-ng-data tree has lang/<family>/ and voices/!v/ subdirs
+    # we need. EspeakDataService extracts it on first launch.
+    # Populated by the Android CI step from the native build's data
+    # output; desktop releases bundle libespeak-ng + its data dir
+    # alongside the runtime instead. The placeholder dir keeps Flutter
+    # happy on desktop checkouts that never run the Android staging.
+    - assets/espeak-ng-data/
+    - assets/espeak-ng-data.tar.gz
+  # No custom fonts shipped yet — relying on the platform system font.
+
+# Windows MSIX packaging. Consumed by `flutter pub run msix:create`
+# after `flutter build windows --release`. The `file_extension` list
+# is what makes Windows offer "Open With → CrisperWeaver" for these
+# types — the argv intake in main.dart already handles the receive
+# side, so registration is the only missing piece.
+#
+# Sideload vs Microsoft Store:
+#   * Today: `store: false`, unsigned. Users sideload, trust the
+#     bundled .cer once, install. SmartScreen complains on first
+#     install — README documents the trust-once flow.
+#   * Store submission later: flip `store: true`, replace identity
+#     + publisher with the Partner Center-issued ones, sign with the
+#     account-bound cert. The Store rewrites `identity_name` /
+#     `publisher` at upload time anyway, so the values below only
+#     matter for sideload.
+#
+# `msix_version` is four-part (Windows requirement). Keep the first
+# three segments in sync with `version:` above. The fourth segment
+# MUST be `0` for Store submissions; for sideload it can be a
+# per-rebuild bump. Identity matches the macOS bundle id so the app
+# has one identity across platforms.
+#
+# Capabilities: `internetClient` (model downloads) is a general
+# capability — no manual approval needed. `runFullTrust` is added
+# automatically by the msix tool for non-UWP Flutter apps, which
+# gives normal Win32 file system access — no need to declare
+# `removableStorage` or `broadFileSystemAccess` separately.
+msix_config:
+  display_name: CrisperWeaver
+  publisher_display_name: CrispStrobe
+  identity_name: com.crispstrobe.crisperweaver
+  publisher: CN=CrispStrobe
+  msix_version: 0.9.0.0
+  logo_path: assets/images/app_logo.png
+  capabilities: internetClient
+  architecture: x64
+  file_extension: .wav, .mp3, .m4a, .flac, .ogg, .aac, .opus, .wma, .srt, .vtt
+  store: false
+  install_certificate: false

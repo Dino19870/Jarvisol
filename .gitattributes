@@ -1,0 +1,14 @@
+# Auto detect text files and perform LF normalization on checkout
+* text=auto
+
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.vbs text eol=crlf
+*.sln text eol=crlf
+*.vcxproj text eol=crlf
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.bin binary

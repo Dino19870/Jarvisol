@@ -1,0 +1,339 @@
+// tokenizer.cpp — WordPiece tokenizer for BERT-family models.
+
+#include "tokenizer.h"
+
+#include "core/bert_norm.h"
+#include "core/bert_pretok.h"
+#include "core/env_gate.h"
+
+#include <algorithm>
+#include <cctype>
+#include <cstring>
+#include <sstream>
+
+bool WordPieceTokenizer::load(const std::vector<std::string> & vocab, int cls_id, int sep_id, int unk_id, int pad_id,
+                              int max_length, bool do_lower_case) {
+    do_lower_case_ = do_lower_case;
+    // Ollama-format GGUFs store WordPiece vocab with SentencePiece-style
+    // "▁" (U+2581, 3 bytes: 0xE2 0x96 0x81) prefix on whole-word tokens
+    // and strip the "##" prefix from subword tokens. Undo this so the
+    // standard WordPiece lookup works: "▁hello" → "hello", "ing" → "##ing".
+    static const std::string SP_PREFIX = "\xe2\x96\x81"; // ▁ (U+2581)
+    bool has_sp_prefix = false;
+    for (size_t i = 0; i < std::min(vocab.size(), (size_t)1000); i++) {
+        if (vocab[i].size() > 3 && vocab[i].compare(0, 3, SP_PREFIX) == 0 && vocab[i][3] != '[') {
+            has_sp_prefix = true;
+            break;
+        }
+    }
+
+    id_to_token_.resize(vocab.size());
+    token_to_id_.clear();
+    token_to_id_.reserve(vocab.size());
+    for (int i = 0; i < (int)vocab.size(); i++) {
+        std::string tok = vocab[i];
+        if (has_sp_prefix) {
+            if (tok.size() > 3 && tok.compare(0, 3, SP_PREFIX) == 0) {
+                // "▁hello" → "hello" (whole-word token)
+                tok = tok.substr(3);
+            } else if (!tok.empty() && tok[0] != '[' && tok[0] != '<') {
+                // "ing" → "##ing" (subword continuation)
+                tok = "##" + tok;
+            }
+        }
+        id_to_token_[i] = tok;
+        token_to_id_[tok] = i;
+    }
+    cls_id_ = cls_id;
+    sep_id_ = sep_id;
+    unk_id_ = unk_id;
+    pad_id_ = pad_id;
+    max_length_ = max_length;
+    build_trie();
+    return !vocab.empty();
+}
+
+void WordPieceTokenizer::build_trie() {
+    trie_nodes_.clear();
+    // Create two roots: one for first-piece tokens, one for ## continuations
+    trie_nodes_.push_back(TrieNode());
+    trie_root_ = 0;
+    trie_nodes_.push_back(TrieNode());
+    trie_cont_ = 1;
+
+    for (auto & [tok, id] : token_to_id_) {
+        bool is_cont = (tok.size() >= 2 && tok[0] == '#' && tok[1] == '#');
+        int root = is_cont ? trie_cont_ : trie_root_;
+        const char * s = tok.c_str();
+        int slen = (int)tok.size();
+        if (is_cont) {
+            s += 2;
+            slen -= 2;
+        } // skip "##" prefix
+
+        int node = root;
+        for (int i = 0; i < slen; i++) {
+            char c = s[i];
+            auto it = trie_nodes_[node].children.find(c);
+            if (it == trie_nodes_[node].children.end()) {
+                int child = (int)trie_nodes_.size();
+                trie_nodes_.push_back(TrieNode());
+                trie_nodes_[node].children[c] = child;
+                node = child;
+            } else {
+                node = it->second;
+            }
+        }
+        trie_nodes_[node].token_id = id;
+    }
+    trie_built_ = true;
+}
+
+// HF's WordPiece emits ONE [UNK] for a word it cannot fully segment and
+// DISCARDS the sub-tokens it already matched (`is_bad` in
+// WordpieceTokenizer.tokenize; `catソファ` -> `[UNK]`, not `cat` + `[UNK]`).
+// Ours kept the matched prefix, which produced a different token sequence for
+// every word containing an out-of-vocabulary character. Verified against the
+// model itself, not from memory of the algorithm.
+//
+// It also caps a word at `max_input_chars_per_word` CODEPOINTS — 100, the
+// value every BERT-family tokenizer.json in the wild declares — and emits a
+// bare [UNK] beyond it.
+//
+// `CRISPEMBED_WORDPIECE_HF_UNK=0` restores the historical prefix-then-[UNK].
+// Pure-ASCII text is unaffected in practice because a 30k WordPiece vocab
+// contains every printable ASCII character as its own token, so no ASCII word
+// is ever unsegmentable — asserted empirically by the ASCII gate in
+// tests/wordpiece_hf_parity.py rather than assumed.
+static constexpr size_t k_max_input_chars_per_word = 100;
+
+std::vector<int> WordPieceTokenizer::wordpiece(const std::string & word) const {
+    static const bool hf_unk_off = core_env::explicitly_off("CRISPEMBED_WORDPIECE_HF_UNK");
+    const bool hf_unk = !hf_unk_off;
+
+    std::vector<int> ids;
+    int start = 0;
+    int len = (int)word.size();
+
+    if (hf_unk) {
+        size_t n_chars = 0;
+        for (unsigned char c : word) n_chars += ((c & 0xC0) != 0x80); // UTF-8 lead bytes
+        if (n_chars > k_max_input_chars_per_word) return { unk_id_ };
+    }
+
+    if (!trie_built_) {
+        // Fallback to original O(n²) if trie not built
+        while (start < len) {
+            int end = len;
+            bool found = false;
+            while (start < end) {
+                std::string sub = word.substr(start, end - start);
+                if (start > 0) sub = "##" + sub;
+                auto it = token_to_id_.find(sub);
+                if (it != token_to_id_.end()) {
+                    ids.push_back(it->second);
+                    found = true;
+                    break;
+                }
+                end--;
+            }
+            if (!found) {
+                if (hf_unk) return { unk_id_ }; // whole word, matched prefix discarded
+                ids.push_back(unk_id_);
+                break;
+            }
+            start = end;
+        }
+        return ids;
+    }
+
+    // Trie-based O(len) longest-match
+    while (start < len) {
+        int root = (start == 0) ? trie_root_ : trie_cont_;
+        int node = root;
+        int best_end = -1;
+        int best_id = -1;
+
+        for (int i = start; i < len; i++) {
+            auto it = trie_nodes_[node].children.find(word[i]);
+            if (it == trie_nodes_[node].children.end()) break;
+            node = it->second;
+            if (trie_nodes_[node].token_id >= 0) {
+                best_end = i + 1;
+                best_id = trie_nodes_[node].token_id;
+            }
+        }
+
+        if (best_id >= 0) {
+            ids.push_back(best_id);
+            start = best_end;
+        } else {
+            if (hf_unk) return { unk_id_ }; // whole word, matched prefix discarded
+            ids.push_back(unk_id_);
+            break;
+        }
+    }
+    return ids;
+}
+
+std::vector<std::string> WordPieceTokenizer::split_words(const std::string & text) const {
+    // HF's BertNormalizer runs strip_accents + lowercase BEFORE the
+    // pre-tokenizer splits, and for an uncased model (`lowercase: true`,
+    // `strip_accents: null`) stripping is ON — `strip_accents.unwrap_or(
+    // lowercase)`. The old per-BYTE std::tolower did neither to a multi-byte
+    // sequence, so `café`/`Müller`/`über` became `caf`+[UNK] / `m`+[UNK] /
+    // [UNK] instead of the single in-vocab tokens `cafe`/`muller`/`uber`
+    // (docs/LANGUAGES.md). See core/bert_norm.h.
+    //
+    // Default ON, because the change is provably confined to non-ASCII input:
+    // core_bert::lower_strip_accents is exactly std::tolower over all of
+    // ASCII (asserted at table-generation time and in tests/test_bert_norm.cpp),
+    // so no pure-ASCII text tokenizes differently than it did before.
+    // `CRISPEMBED_WORDPIECE_HF_NORM=0` restores the historical per-byte
+    // lowercase for bit-exact comparison against pre-fix output.
+    static const bool hf_norm_off = core_env::explicitly_off("CRISPEMBED_WORDPIECE_HF_NORM");
+    const bool hf_norm = do_lower_case_ && !hf_norm_off;
+    const std::string normalized = hf_norm ? core_bert::lower_strip_accents(text) : std::string();
+    const std::string & src = hf_norm ? normalized : text;
+
+    // The SPLIT stage. Every BERT-family WordPiece model — checked across
+    // all-MiniLM, all-mpnet, LaBSE, bert-base-{uncased,cased},
+    // bert-base-multilingual-uncased, bge, e5 — declares `BertPreTokenizer`
+    // in its tokenizer.json, so core_bert::pretokenize is the correct
+    // splitter for ALL of them, not only the LaBSE class that first needed
+    // it. The historical per-byte isspace/ispunct loop is an approximation
+    // that is only right for ASCII: it glues every CJK run into one word
+    // (`日本語...` -> one [UNK] instead of HF's per-ideograph tokens) and
+    // swallows Unicode punctuation into the adjacent word (`“hello”` ->
+    // `“` + `##hell` + `##o` + `##”` instead of `“` `hello` `”`).
+    //
+    // Default ON. Against the historical loop it is IDENTICAL for all
+    // printable ASCII plus space/\t/\n/\v/\f/\r — `isspace` matches CAT_WS
+    // and `ispunct` matches CAT_P over that whole range, asserted per
+    // codepoint in tests/test_bert_norm.cpp. It differs on exactly one ASCII
+    // class: raw C0 control bytes and DEL, which HF's clean_text DROPS and
+    // the historical loop glued into the surrounding word (turning it into
+    // [UNK]). That divergence is a fix, and it is pinned by its own test.
+    //
+    // `CRISPEMBED_WORDPIECE_HF_PRETOK=0` restores the historical splitter.
+    // `tokenizer.ggml.pre = "bert"` still forces it on regardless.
+    static const bool hf_pretok_off = core_env::explicitly_off("CRISPEMBED_WORDPIECE_HF_PRETOK");
+    if (bert_pretok_ || !hf_pretok_off) {
+        // HF BertNormalizer + BertPreTokenizer.
+        std::vector<std::string> words = core_bert::pretokenize(src);
+        if (do_lower_case_ && !hf_norm) {
+            for (auto & w : words)
+                for (auto & c : w) c = (char)std::tolower((unsigned char)c);
+        }
+        return words;
+    }
+    // Historical per-byte preprocessing: lowercase + split on ASCII
+    // whitespace/punctuation. Reachable via the gate above; kept as the
+    // bit-exact comparison arm for every GGUF shipped before this change.
+    std::vector<std::string> words;
+    std::string current;
+    for (size_t i = 0; i < src.size(); i++) {
+        unsigned char c = src[i];
+        if (std::isspace(c)) {
+            if (!current.empty()) {
+                words.push_back(current);
+                current.clear();
+            }
+        } else if (std::ispunct(c)) {
+            if (!current.empty()) {
+                words.push_back(current);
+                current.clear();
+            }
+            words.push_back(std::string(1, (char)c));
+        } else {
+            // hf_norm already lowercased (Unicode-aware); the byte tolower is
+            // only the legacy path's own casing step.
+            current += (do_lower_case_ && !hf_norm) ? (char)std::tolower(c) : (char)c;
+        }
+    }
+    if (!current.empty()) words.push_back(current);
+    return words;
+}
+
+embed_tokens WordPieceTokenizer::encode(const std::string & text) const {
+    std::vector<std::string> words = split_words(text);
+
+    // Tokenize each word via WordPiece
+    std::vector<int32_t> ids;
+    ids.push_back(cls_id_);
+    for (const auto & w : words) {
+        auto wp = wordpiece(w);
+        for (int id : wp) {
+            if ((int)ids.size() >= max_length_ - 1) break; // leave room for [SEP]
+            ids.push_back(id);
+        }
+    }
+    ids.push_back(sep_id_);
+
+    // Build result with padding
+    embed_tokens result;
+    int seq_len = (int)ids.size();
+    int pad_len = std::min(max_length_, std::max(seq_len, 1));
+
+    result.ids.resize(pad_len, pad_id_);
+    result.type_ids.resize(pad_len, 0);
+    result.attn_mask.resize(pad_len, 0);
+
+    for (int i = 0; i < seq_len && i < pad_len; i++) {
+        result.ids[i] = ids[i];
+        result.attn_mask[i] = 1;
+    }
+
+    return result;
+}
+
+embed_tokens WordPieceTokenizer::encode_pair(const std::string & text_a, const std::string & text_b) const {
+    // Tokenize a string to raw subword ids (no special tokens, no padding)
+    auto tokenize_raw = [&](const std::string & text) -> std::vector<int32_t> {
+        std::vector<int32_t> ids;
+        for (const auto & w : split_words(text))
+            for (int id : wordpiece(w)) ids.push_back(id);
+        return ids;
+    };
+
+    auto ids_a = tokenize_raw(text_a);
+    auto ids_b = tokenize_raw(text_b);
+
+    // Truncate longest-first to fit: [CLS] a [SEP] b [SEP] = n_a + n_b + 3 tokens
+    int budget = max_length_ - 3;
+    while ((int)(ids_a.size() + ids_b.size()) > budget) {
+        if (ids_a.size() >= ids_b.size())
+            ids_a.pop_back();
+        else
+            ids_b.pop_back();
+    }
+
+    // Build combined sequence with type_ids
+    std::vector<int32_t> ids, types;
+    ids.push_back(cls_id_);
+    types.push_back(0);
+    for (int id : ids_a) {
+        ids.push_back(id);
+        types.push_back(0);
+    }
+    ids.push_back(sep_id_);
+    types.push_back(0);
+    for (int id : ids_b) {
+        ids.push_back(id);
+        types.push_back(1);
+    }
+    ids.push_back(sep_id_);
+    types.push_back(1);
+
+    embed_tokens result;
+    int seq_len = (int)ids.size();
+    result.ids.resize(max_length_, pad_id_);
+    result.type_ids.resize(max_length_, 0);
+    result.attn_mask.resize(max_length_, 0);
+    for (int i = 0; i < seq_len; i++) {
+        result.ids[i] = ids[i];
+        result.type_ids[i] = types[i];
+        result.attn_mask[i] = 1;
+    }
+    return result;
+}

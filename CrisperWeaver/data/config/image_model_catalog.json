@@ -1,0 +1,444 @@
+{
+  "schema_version": "1.0.0",
+  "components": [
+    {
+      "component_id": "CMP_01_REALISTIC_VISION_INPAINT_FP32",
+      "file_name": "Realistic_Vision_V6.0_NV_B1_inpainting.safetensors",
+      "relative_install_path": "models/Stable-diffusion/Realistic_Vision_V6.0_NV_B1_inpainting.safetensors",
+      "download_url": "https://huggingface.co/SG161222/Realistic_Vision_V6.0_B1_noVAE/resolve/main/Realistic_Vision_V6.0_NV_B1_inpainting.safetensors",
+      "expected_sha256": "e9c575dbbe237ea889e14c41f953fc9fb311439a88b15bb2e789b0630ae45efe",
+      "expected_size_bytes": 4265203868,
+      "is_shared_dependency": false,
+      "supports_resume": true,
+      "auth_required": false,
+      "license_id": "LIC_OPENRAIL_M_REALISTIC_VISION"
+    },
+    {
+      "component_id": "CMP_02_REALISTIC_VISION_INPAINT_FP16",
+      "file_name": "Realistic_Vision_V6.0_NV_B1_inpainting_fp16.safetensors",
+      "relative_install_path": "models/Stable-diffusion/Realistic_Vision_V6.0_NV_B1_inpainting_fp16.safetensors",
+      "download_url": "https://huggingface.co/SG161222/Realistic_Vision_V6.0_B1_noVAE/resolve/main/Realistic_Vision_V6.0_NV_B1_inpainting_fp16.safetensors",
+      "expected_sha256": "d939cbdbce19a9d8837794acd06ef8db1ad4a2f2bcf1418432d897eac98f1afd",
+      "expected_size_bytes": 2136906350,
+      "is_shared_dependency": false,
+      "supports_resume": true,
+      "auth_required": false,
+      "license_id": "LIC_OPENRAIL_M_REALISTIC_VISION"
+    },
+    {
+      "component_id": "CMP_03_AE_SHARED",
+      "file_name": "ae.safetensors",
+      "relative_install_path": "models/Stable-diffusion/ae.safetensors",
+      "download_url": "https://huggingface.co/receptektas/black-forest-labs-ae_safetensors/resolve/main/ae.safetensors",
+      "expected_sha256": "afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38",
+      "expected_size_bytes": 335304388,
+      "is_shared_dependency": true,
+      "supports_resume": true,
+      "auth_required": false,
+      "license_id": "LIC_APACHE_2_0_BFL"
+    },
+    {
+      "component_id": "CMP_04_CHROMA_FLASH_DIT",
+      "file_name": "chroma-unlocked-v46-flash-Q4_0.gguf",
+      "relative_install_path": "models/Stable-diffusion/chroma-unlocked-v46-flash-Q4_0.gguf",
+      "download_url": "https://huggingface.co/silveroxides/Chroma-GGUF/resolve/main/chroma-unlocked-v46-flash/chroma-unlocked-v46-flash-Q4_0.gguf",
+      "expected_sha256": "3b114c0b32145c3e725ba72b571fc0641748672eda789596e882db24fb77ad16",
+      "expected_size_bytes": 5432053920,
+      "is_shared_dependency": false,
+      "supports_resume": true,
+      "auth_required": false,
+      "license_id": "LIC_APACHE_2_0_CHROMA"
+    },
+    {
+      "component_id": "CMP_05_CLIP_G_SHARED",
+      "file_name": "clip_g.safetensors",
+      "relative_install_path": "models/Stable-diffusion/clip_g.safetensors",
+      "download_url": "https://huggingface.co/Comfy-Org/stable-diffusion-3.5-fp8/resolve/main/text_encoders/clip_g.safetensors",
+      "expected_sha256": "ec310df2af79c318e24d20511b601a591ca8cd4f1fce1d8dff822a356bcdb1f4",
+      "expected_size_bytes": 1389382176,
+      "is_shared_dependency": true,
+      "supports_resume": true,
+      "auth_required": false,
+      "license_id": "LIC_STABILITY_COMMUNITY_SD35"
+    },
+    {
+      "component_id": "CMP_06_CLIP_L_SHARED",
+      "file_name": "clip_l.safetensors",
+      "relative_install_path": "models/Stable-diffusion/clip_l.safetensors",
+      "download_url": "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/clip_l.safetensors",
+      "expected_sha256": "660c6f5b1abae9dc498ac2d21e1347d2abdb0cf6c0c0c8576cd796491d9a6cdd",
+      "expected_size_bytes": 246144152,
+      "is_shared_dependency": true,
+      "supports_resume": true,
+      "auth_required": false,
+      "license_id": "LIC_MIT_OPENAI_CLIP"
+    },
+    {
+      "component_id": "CMP_07_FLUX1_SCHNELL_DIT",
+      "file_name": "flux1-schnell-Q4_K_S.gguf",
+      "relative_install_path": "models/Stable-diffusion/flux1-schnell-Q4_K_S.gguf",
+      "download_url": "https://huggingface.co/city96/FLUX.1-schnell-gguf/resolve/main/flux1-schnell-Q4_K_S.gguf",
+      "expected_sha256": "4fd16477b3a5296d0cf722c4b92a9fd7f30d09ac7495826e4465d8de9c9fd973",
+      "expected_size_bytes": 6783943712,
+      "is_shared_dependency": false,
+      "supports_resume": true,
+      "auth_required": false,
+      "license_id": "LIC_APACHE_2_0_BFL"
+    },
+    {
+      "component_id": "CMP_09_SD35_LARGE_TURBO_DIT",
+      "file_name": "sd3.5_large_turbo-q4_0.gguf",
+      "relative_install_path": "models/Stable-diffusion/sd3.5_large_turbo-q4_0.gguf",
+      "download_url": "https://huggingface.co/calcuis/sd3.5-large-turbo/resolve/main/sd3.5_large_turbo-q4_0.gguf",
+      "expected_sha256": "5f924f492535ffaec48359b7fe6e1a621eed16fb8de4e1b408132d90b1039382",
+      "expected_size_bytes": 4772054752,
+      "is_shared_dependency": false,
+      "supports_resume": true,
+      "auth_required": false,
+      "license_id": "LIC_STABILITY_COMMUNITY_SD35"
+    },
+    {
+      "component_id": "CMP_11_SD15_INPAINT_Q4",
+      "file_name": "stable-diffusion-v1-5-inpainting-Q4_0.gguf",
+      "relative_install_path": "models/Stable-diffusion/stable-diffusion-v1-5-inpainting-Q4_0.gguf",
+      "download_url": "https://huggingface.co/gpustack/stable-diffusion-v1-5-inpainting-GGUF/resolve/main/stable-diffusion-v1-5-inpainting-Q4_0.gguf",
+      "expected_sha256": "d157ce24483f0c999062da140eacebe8f3ed015e652723e31f6d39119b800c16",
+      "expected_size_bytes": 1747219584,
+      "is_shared_dependency": false,
+      "supports_resume": true,
+      "auth_required": false,
+      "license_id": "LIC_OPENRAIL_M_SD15"
+    },
+    {
+      "component_id": "CMP_12_T5XXL_SHARED",
+      "file_name": "t5xxl_q4_k.gguf",
+      "relative_install_path": "models/Stable-diffusion/t5xxl_q4_k.gguf",
+      "download_url": "https://huggingface.co/Green-Sky/flux.1-schnell-GGUF/resolve/main/t5xxl_q4_k.gguf",
+      "expected_sha256": "b235e9a108ccc1803c576464e937cf5ec4d8eb34d83776e5199450400d4e0bcb",
+      "expected_size_bytes": 2752844256,
+      "is_shared_dependency": true,
+      "supports_resume": true,
+      "auth_required": false,
+      "license_id": "LIC_APACHE_2_0_GOOGLE"
+    },
+    {
+      "component_id": "CMP_13_VAE_SD1X_SHARED",
+      "file_name": "vae-ft-mse-840000-ema-pruned.safetensors",
+      "relative_install_path": "models/Stable-diffusion/vae-ft-mse-840000-ema-pruned.safetensors",
+      "download_url": "https://huggingface.co/stabilityai/sd-vae-ft-mse-original/resolve/main/vae-ft-mse-840000-ema-pruned.safetensors",
+      "expected_sha256": "735e4c3a447a3255760d7f86845f09f937809baa529c17370d83e4c3758f3c75",
+      "expected_size_bytes": 334641190,
+      "is_shared_dependency": true,
+      "supports_resume": true,
+      "auth_required": false,
+      "license_id": "LIC_MIT_STABILITY"
+    },
+    {
+      "component_id": "CMP_14_DREAMSHAPER_XL_LIGHTNING",
+      "file_name": "dreamshaperXL_lightningDPMSDE.safetensors",
+      "relative_install_path": "models/Stable-diffusion/dreamshaperXL_lightningDPMSDE.safetensors",
+      "download_url": "https://civitai.com/api/download/models/354657",
+      "expected_sha256": "fdbe56354b8f876b736f24d3ad867ecd4140c019f57642ec8ddd878088d44f64",
+      "expected_size_bytes": 6939220250,
+      "is_shared_dependency": false,
+      "supports_resume": true,
+      "auth_required": false,
+      "license_id": "LIC_DREAMSHAPER_PERMISSIVE"
+    },
+    {
+      "component_id": "CMP_15_REALVIS_XL_V50_LIGHTNING",
+      "file_name": "realvisxlV50_v50LightningBakedvae.safetensors",
+      "relative_install_path": "models/Stable-diffusion/realvisxlV50_v50LightningBakedvae.safetensors",
+      "download_url": "https://civitai.com/api/download/models/361593",
+      "expected_sha256": "fabcadd9330dcc4f9702063428d40b9d4d07168d8acefc819b8d1d9db466b3ec",
+      "expected_size_bytes": 6938065512,
+      "is_shared_dependency": false,
+      "supports_resume": true,
+      "auth_required": false,
+      "license_id": "LIC_REALVISXL_PERMISSIVE"
+    },
+    {
+      "component_id": "CMP_16_JUGGERNAUT_XL_RAGNAROK",
+      "file_name": "juggernautXL_ragnarok.safetensors",
+      "relative_install_path": "models/Stable-diffusion/juggernautXL_ragnarok.safetensors",
+      "download_url": "https://civitai.com/api/download/models/782002",
+      "expected_sha256": "dd08fa32f98d05a2443ca1419e46df1575a0811f6e3b246d9dd47ff20f5eb66a",
+      "expected_size_bytes": 7105350162,
+      "is_shared_dependency": false,
+      "supports_resume": true,
+      "auth_required": false,
+      "license_id": "LIC_JUGGERNAUT_COMMUNITY"
+    },
+    {
+      "component_id": "CMP_17_CYBERREALISTIC_PONY_V18",
+      "file_name": "CyberRealisticPony_V18.0_F16.safetensors",
+      "relative_install_path": "models/Stable-diffusion/CyberRealisticPony_V18.0_F16.safetensors",
+      "download_url": "https://civitai.com/api/download/models/482329",
+      "expected_sha256": "1d580c1c3f3612fa4db88af65372255582d5509ca0b28f85387273368301941b",
+      "expected_size_bytes": 6938041288,
+      "is_shared_dependency": false,
+      "supports_resume": true,
+      "auth_required": false,
+      "license_id": "LIC_CYBERREALISTIC_COMMUNITY"
+    }
+  ],
+  "logical_models": [
+    {
+      "logical_model_id": "MOD_01_CHROMA_FLASH",
+      "display_name": "Chroma Flash (Q4_0)",
+      "category": "GENERATION",
+      "backend": "stable_diffusion_cpp",
+      "primary_component_id": "CMP_04_CHROMA_FLASH_DIT",
+      "required_component_ids": [
+        "CMP_04_CHROMA_FLASH_DIT",
+        "CMP_03_AE_SHARED",
+        "CMP_12_T5XXL_SHARED"
+      ],
+      "optional_component_ids": [],
+      "shared_dependency_ids": [
+        "CMP_03_AE_SHARED",
+        "CMP_12_T5XXL_SHARED"
+      ],
+      "license_id": "LIC_APACHE_2_0_CHROMA",
+      "license_status": "LICENSE_CLEAR_FOR_DOWNLOAD_INSTALLER",
+      "distribution_strategy": "QUANTIZED_COMMUNITY_RELEASE",
+      "requires_user_acceptance": false,
+      "installer_readiness": "READY_FOR_IMPLEMENTATION",
+      "license_url": "https://huggingface.co/silveroxides/Chroma-GGUF",
+      "source_page_url": "https://huggingface.co/silveroxides/Chroma-GGUF",
+      "recommended_presets": {
+        "steps": 8,
+        "cfg_scale": 1.0,
+        "guidance": 0.0,
+        "sampler": "euler",
+        "scheduler": "simple",
+        "width": 768,
+        "height": 768
+      }
+    },
+    {
+      "logical_model_id": "MOD_02_FLUX1_SCHNELL",
+      "display_name": "FLUX.1 Schnell (Q4_K_S)",
+      "category": "GENERATION",
+      "backend": "stable_diffusion_cpp",
+      "primary_component_id": "CMP_07_FLUX1_SCHNELL_DIT",
+      "required_component_ids": [
+        "CMP_07_FLUX1_SCHNELL_DIT",
+        "CMP_03_AE_SHARED",
+        "CMP_06_CLIP_L_SHARED",
+        "CMP_12_T5XXL_SHARED"
+      ],
+      "optional_component_ids": [],
+      "shared_dependency_ids": [
+        "CMP_03_AE_SHARED",
+        "CMP_06_CLIP_L_SHARED",
+        "CMP_12_T5XXL_SHARED"
+      ],
+      "license_id": "LIC_APACHE_2_0_BFL",
+      "license_status": "LICENSE_CLEAR_FOR_DOWNLOAD_INSTALLER",
+      "distribution_strategy": "QUANTIZED_COMMUNITY_RELEASE",
+      "requires_user_acceptance": false,
+      "installer_readiness": "READY_FOR_IMPLEMENTATION",
+      "license_url": "https://huggingface.co/black-forest-labs/FLUX.1-schnell",
+      "source_page_url": "https://huggingface.co/city96/FLUX.1-schnell-gguf"
+    },
+    {
+      "logical_model_id": "MOD_03_SD35_LARGE_TURBO",
+      "display_name": "Stable Diffusion 3.5 Large Turbo (Q4_0)",
+      "category": "GENERATION",
+      "backend": "stable_diffusion_cpp",
+      "primary_component_id": "CMP_09_SD35_LARGE_TURBO_DIT",
+      "required_component_ids": [
+        "CMP_09_SD35_LARGE_TURBO_DIT",
+        "CMP_03_AE_SHARED",
+        "CMP_06_CLIP_L_SHARED",
+        "CMP_05_CLIP_G_SHARED",
+        "CMP_12_T5XXL_SHARED"
+      ],
+      "optional_component_ids": [],
+      "shared_dependency_ids": [
+        "CMP_03_AE_SHARED",
+        "CMP_06_CLIP_L_SHARED",
+        "CMP_05_CLIP_G_SHARED",
+        "CMP_12_T5XXL_SHARED"
+      ],
+      "license_id": "LIC_STABILITY_COMMUNITY_SD35",
+      "license_status": "LICENSE_REQUIRES_USER_ACCEPTANCE",
+      "distribution_strategy": "QUANTIZED_COMMUNITY_RELEASE",
+      "requires_user_acceptance": true,
+      "installer_readiness": "READY_WITH_USER_ACCEPTANCE_FLOW",
+      "license_url": "https://huggingface.co/stabilityai/stable-diffusion-3.5-large-turbo",
+      "source_page_url": "https://huggingface.co/calcuis/sd3.5-large-turbo"
+    },
+    {
+      "logical_model_id": "MOD_06_REALISTIC_VISION_INPAINT_FP32",
+      "display_name": "Realistic Vision V6.0 B1 Inpainting (Full safetensors)",
+      "category": "INPAINT",
+      "backend": "stable_diffusion_cpp",
+      "primary_component_id": "CMP_01_REALISTIC_VISION_INPAINT_FP32",
+      "required_component_ids": [
+        "CMP_01_REALISTIC_VISION_INPAINT_FP32",
+        "CMP_13_VAE_SD1X_SHARED"
+      ],
+      "optional_component_ids": [],
+      "shared_dependency_ids": [
+        "CMP_13_VAE_SD1X_SHARED"
+      ],
+      "license_id": "LIC_OPENRAIL_M_REALISTIC_VISION",
+      "license_status": "LICENSE_REQUIRES_ATTRIBUTION",
+      "distribution_strategy": "OFFICIAL_COMMUNITY_FULL_WEIGHTS",
+      "requires_user_acceptance": false,
+      "installer_readiness": "READY_FOR_IMPLEMENTATION",
+      "license_url": "https://huggingface.co/SG161222/Realistic_Vision_V6.0_B1_noVAE",
+      "source_page_url": "https://huggingface.co/SG161222/Realistic_Vision_V6.0_B1_noVAE"
+    },
+    {
+      "logical_model_id": "MOD_07_REALISTIC_VISION_INPAINT_FP16",
+      "display_name": "Realistic Vision V6.0 B1 Inpainting (FP16 safetensors)",
+      "category": "INPAINT",
+      "backend": "stable_diffusion_cpp",
+      "primary_component_id": "CMP_02_REALISTIC_VISION_INPAINT_FP16",
+      "required_component_ids": [
+        "CMP_02_REALISTIC_VISION_INPAINT_FP16",
+        "CMP_13_VAE_SD1X_SHARED"
+      ],
+      "optional_component_ids": [],
+      "shared_dependency_ids": [
+        "CMP_13_VAE_SD1X_SHARED"
+      ],
+      "license_id": "LIC_OPENRAIL_M_REALISTIC_VISION",
+      "license_status": "LICENSE_REQUIRES_ATTRIBUTION",
+      "distribution_strategy": "OFFICIAL_COMMUNITY_FP16_WEIGHTS",
+      "requires_user_acceptance": false,
+      "installer_readiness": "READY_FOR_IMPLEMENTATION",
+      "license_url": "https://huggingface.co/SG161222/Realistic_Vision_V6.0_B1_noVAE",
+      "source_page_url": "https://huggingface.co/SG161222/Realistic_Vision_V6.0_B1_noVAE"
+    },
+    {
+      "logical_model_id": "MOD_08_SD15_INPAINT_Q4",
+      "display_name": "Stable Diffusion 1.5 Inpainting (Q4_0 GGUF)",
+      "category": "INPAINT",
+      "backend": "stable_diffusion_cpp",
+      "primary_component_id": "CMP_11_SD15_INPAINT_Q4",
+      "required_component_ids": [
+        "CMP_11_SD15_INPAINT_Q4",
+        "CMP_13_VAE_SD1X_SHARED"
+      ],
+      "optional_component_ids": [],
+      "shared_dependency_ids": [
+        "CMP_13_VAE_SD1X_SHARED"
+      ],
+      "license_id": "LIC_OPENRAIL_M_SD15",
+      "license_status": "LICENSE_REQUIRES_ATTRIBUTION",
+      "distribution_strategy": "QUANTIZED_COMMUNITY_RELEASE",
+      "requires_user_acceptance": false,
+      "installer_readiness": "READY_FOR_IMPLEMENTATION",
+      "license_url": "https://huggingface.co/runwayml/stable-diffusion-v1-5",
+      "source_page_url": "https://huggingface.co/gpustack/stable-diffusion-v1-5-inpainting-GGUF"
+    },
+    {
+      "logical_model_id": "MOD_09_DREAMSHAPER_XL_LIGHTNING",
+      "display_name": "DreamShaper XL (Lightning DPM SDE)",
+      "category": "GENERATION",
+      "backend": "stable_diffusion_cpp",
+      "primary_component_id": "CMP_14_DREAMSHAPER_XL_LIGHTNING",
+      "required_component_ids": [
+        "CMP_14_DREAMSHAPER_XL_LIGHTNING"
+      ],
+      "optional_component_ids": [],
+      "shared_dependency_ids": [],
+      "license_id": "LIC_DREAMSHAPER_PERMISSIVE",
+      "license_status": "LICENSE_CLEAR_FOR_DOWNLOAD_INSTALLER",
+      "distribution_strategy": "OFFICIAL_COMMUNITY_FULL_WEIGHTS",
+      "requires_user_acceptance": false,
+      "installer_readiness": "READY_FOR_IMPLEMENTATION",
+      "license_url": "https://civitai.com/models/112902/dreamshaper-xl",
+      "source_page_url": "https://civitai.com/models/112902/dreamshaper-xl",
+      "recommended_presets": {
+        "steps": 8,
+        "cfg_scale": 2.0,
+        "sampler": "dpmpp_sde",
+        "width": 768,
+        "height": 768
+      }
+    },
+    {
+      "logical_model_id": "MOD_10_REALVIS_XL_V50_LIGHTNING",
+      "display_name": "RealVisXL V5.0 (Lightning Baked VAE)",
+      "category": "GENERATION",
+      "backend": "stable_diffusion_cpp",
+      "primary_component_id": "CMP_15_REALVIS_XL_V50_LIGHTNING",
+      "required_component_ids": [
+        "CMP_15_REALVIS_XL_V50_LIGHTNING"
+      ],
+      "optional_component_ids": [],
+      "shared_dependency_ids": [],
+      "license_id": "LIC_REALVISXL_PERMISSIVE",
+      "license_status": "LICENSE_CLEAR_FOR_DOWNLOAD_INSTALLER",
+      "distribution_strategy": "OFFICIAL_COMMUNITY_FULL_WEIGHTS",
+      "requires_user_acceptance": false,
+      "installer_readiness": "READY_FOR_IMPLEMENTATION",
+      "license_url": "https://civitai.com/models/139562/realvisxl-v50",
+      "source_page_url": "https://civitai.com/models/139562/realvisxl-v50",
+      "recommended_presets": {
+        "steps": 8,
+        "cfg_scale": 2.0,
+        "sampler": "dpmpp_sde",
+        "width": 768,
+        "height": 768
+      }
+    },
+    {
+      "logical_model_id": "MOD_11_JUGGERNAUT_XL_RAGNAROK",
+      "display_name": "Juggernaut XL (Ragnarok V9)",
+      "category": "GENERATION",
+      "backend": "stable_diffusion_cpp",
+      "primary_component_id": "CMP_16_JUGGERNAUT_XL_RAGNAROK",
+      "required_component_ids": [
+        "CMP_16_JUGGERNAUT_XL_RAGNAROK"
+      ],
+      "optional_component_ids": [],
+      "shared_dependency_ids": [],
+      "license_id": "LIC_JUGGERNAUT_COMMUNITY",
+      "license_status": "LICENSE_CLEAR_FOR_DOWNLOAD_INSTALLER",
+      "distribution_strategy": "OFFICIAL_COMMUNITY_FULL_WEIGHTS",
+      "requires_user_acceptance": false,
+      "installer_readiness": "READY_FOR_IMPLEMENTATION",
+      "license_url": "https://civitai.com/models/133005/juggernaut-xl",
+      "source_page_url": "https://civitai.com/models/133005/juggernaut-xl",
+      "recommended_presets": {
+        "steps": 25,
+        "cfg_scale": 6.0,
+        "sampler": "dpmpp_2m",
+        "width": 768,
+        "height": 768
+      }
+    },
+    {
+      "logical_model_id": "MOD_12_CYBERREALISTIC_PONY_V18",
+      "display_name": "CyberRealistic Pony V18.0 (F16)",
+      "category": "GENERATION",
+      "backend": "stable_diffusion_cpp",
+      "primary_component_id": "CMP_17_CYBERREALISTIC_PONY_V18",
+      "required_component_ids": [
+        "CMP_17_CYBERREALISTIC_PONY_V18"
+      ],
+      "optional_component_ids": [],
+      "shared_dependency_ids": [],
+      "license_id": "LIC_CYBERREALISTIC_COMMUNITY",
+      "license_status": "LICENSE_CLEAR_FOR_DOWNLOAD_INSTALLER",
+      "distribution_strategy": "OFFICIAL_COMMUNITY_FULL_WEIGHTS",
+      "requires_user_acceptance": false,
+      "installer_readiness": "READY_FOR_IMPLEMENTATION",
+      "license_url": "https://civitai.com/models/432936/cyberrealistic-pony",
+      "source_page_url": "https://civitai.com/models/432936/cyberrealistic-pony",
+      "recommended_presets": {
+        "steps": 25,
+        "cfg_scale": 6.0,
+        "sampler": "euler_a",
+        "width": 768,
+        "height": 768
+      }
+    }
+  ]
+}

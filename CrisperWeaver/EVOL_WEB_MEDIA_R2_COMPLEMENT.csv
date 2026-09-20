@@ -1,0 +1,9 @@
+Point;Oracle;Resultat;Preuve;Commentaire
+RELEASE-FILE-COUNT;65739;65768 (+29);EVOL_WEB_MEDIA_R2_RELEASE_CURRENT_MANIFEST.csv;Ecart de +29 fichiers reels dans Jarvisol_V1_POST_GEL_Final_v2
+RELEASE-DIFF-ONLY-BASELINE;0;0;EVOL_WEB_MEDIA_R2_RELEASE_CURRENT_MANIFEST.csv;Tous les 65739 fichiers du manifeste de gel sont presents (0 manquant)
+RELEASE-DIFF-ONLY-CURRENT;0;29;EVOL_WEB_MEDIA_R2_RELEASE_CURRENT_MANIFEST.csv;29 fichiers additionnels identifies et dates (traces du test reel utilisateur de jarvisol.exe)
+RELEASE-DIFF-MODIFIED;0;1;data/models/tts/voices/imported_voices.json;Fichier modifie lors de l import de voix pendant le test reel utilisateur (2 -> 1231 octets)
+RELEASE_V2_4_MUTATION;PASS (0 mutation);FAIL (29 ajouts, 1 modifie);Audit comparatif Final_v2 vs FINAL_POST_GEL_RELEASE_MANIFEST_FINAL.csv;Declare FAIL conformement a la consigne jusqu a decision externe
+GIT-STATUS-PERIMETER;5 fichiers cibles (3 lib, 2 test);CONFORME;git status --short;Seuls les 5 fichiers cibles modifies pour cette evolution, backups isoles
+DESCRIPTION-WORDING;Formulation requise integree;CONFORME;EVOL_WEB_MEDIA_R2_COMPLEMENT.md;Formulation litterale integree sans generalisation abusive aux extracteurs tiers
+BUILD_ADDITIONNEL;0;0;CrisperWeaver;Aucune compilation Release Windows executee

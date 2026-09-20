@@ -1,0 +1,96 @@
+# ── Build & Temporary Artifacts ──
+build/
+bin/
+obj/
+Debug/
+Release/
+x64/
+*.dir/
+*.vcxproj*
+*.sln
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.ninja
+.ninja_*
+*.dill
+*.dill.track.dill
+*.pdb
+*.ilk
+*.exp
+*.idb
+
+# ── Flutter / Dart ──
+.dart_tool/
+.packages
+.pub-cache/
+.pub/
+ephemeral/
+generated_plugin_registrant.*
+generated_plugins.cmake
+
+# ── IDEs & Editors ──
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.user
+*.suo
+
+# ── OS Generated ──
+Thumbs.db
+[Dd]esktop.ini
+$RECYCLE.BIN/
+.DS_Store
+
+# ── Historical Backups & Local Test Dumps ──
+*.bak_*
+*.bak
+*.tmp
+*.log
+crash_dumps/
+logs/
+test_fail_details*.txt
+test_results*.txt
+tmp_*.png
+test_*.pdf
+test_output.*
+
+# ── AI Model Weights (NEVER commit model weights) ──
+*.gguf
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.onnx
+data/models/
+models/asr/
+models/tts/
+models/embeddings/
+models/llm/
+models/sd/
+voice_bake_bundle/chatterbox_weights/
+chatterbox_weights/
+
+# Exception: keep lightweight test fixtures under 1MB
+!CrispASR/models/for-tests-*.bin
+
+# ── Precompiled Runtime Downloads ──
+runtime/node/
+runtime/web_media/*.exe
+!runtime/web_media/licenses/
+!runtime/web_media/SHA2-256SUMS
+
+# ── Secrets & Private Configurations ──
+*.env
+*.key
+*.token
+*.pem
+credentials*.json
+secrets*.json
+
+mcp_servers/**/credentials.json
+mcp_servers/**/gcp-oauth.keys.json
+

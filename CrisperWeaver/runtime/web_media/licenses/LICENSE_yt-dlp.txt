@@ -1,0 +1,13 @@
+Package: yt-dlp
+Version: 2026.08.19
+Source: https://github.com/yt-dlp/yt-dlp
+Upstream Release: https://github.com/yt-dlp/yt-dlp/releases/tag/2026.08.19
+License: The Unlicense (Public Domain dedication)
+Redistribution Obligations: None (Public Domain dedication).
+
+This is free and unencumbered software released into the public domain.
+
+Anyone is free to copy, modify, publish, use, compile, sell, or
+distribute this software, either in source code form or as a compiled
+binary, for any purpose, commercial or non-commercial, and by any
+means.

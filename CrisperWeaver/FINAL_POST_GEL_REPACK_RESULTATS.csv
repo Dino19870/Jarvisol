@@ -1,0 +1,15 @@
+ID;NIVEAU;STATUT;PREUVE;COMMENTAIRE
+REPACKAGING;PACKAGING;PASS;Distribution Final_v2 (40.89 GiB / 65740 fichiers);Squelette aligné strictement sur VAGUE-C Candidate. Purge de 56.67 GiB dump models SD non managé et 8.34 GiB caches régénérables.
+HYGIENE-BACKUPS;HYGIENE;PASS;0 fichier .bak résiduel dans Final_v2;Les 3 fichiers .bak_* de data/flutter_assets et tous les backups orphelins sont purgés de la distribution finale.
+SIZE-CONTROL;PACKAGING;PASS;Taille réduite de 112.66 GiB à 40.89 GiB (-71.77 GiB / -63.7%);Empreinte disque ramenée à la taille nominale des runtimes et modèles strictement nécessaires.
+SMOKE-FINAL-001;EXECUTION;PASS;jarvisol.exe lancé (PID 36540), WM_CLOSE -> exitCode = 0;Fermeture gracieuse confirmée. L'ancien code 1 était un artefact de proc.terminate() (TerminateProcess Win32).
+SMOKE-FINAL-002;INTEGRITE;PASS;Template Lite SHA A4159701321DC5798B6E7879AC3C7DED036F63476373AD1C8957B7D1D0FBC036;preferences.lite.json et preferences.lite.recovery.json présents, default_model: base, is_lite: true.
+SMOKE-FINAL-003;EXECUTION;PASS;jarvisol.exe réel : backup failed créé, restore Lite OK, anti-boucle OK;Exécuté sur le binaire Release. Stale marker détecté -> backup preferences.failed_<ts>.json -> restore recovery -> anti-loop vérifié.
+SMOKE-FINAL-004;EXECUTION;PASS / QUALIFIE;yt-dlp.exe embedded fonctionnel (ID LVZYU_4VlHE résolu en direct) / BLOCKED_UI canvas;Recherche CLI Release PASS. Clic GUI canvas qualifié BLOCKED_UI (headless Direct3D). Couverture widget assurée par testWidgets INDIRECT.
+SMOKE-FINAL-005;PORTABILITE;PASS;yt-dlp v2026.08.19 et ffmpeg fonctionnels sous PATH isolé;Aucune dépendance vers les outils système Windows ou variables d'environnement globales.
+SMOKE-FINAL-006;PERSISTANCE;PASS / QUALIFIE;data/batch/ présent et inscriptible / testWidgets 11/11 PASS;Persistance fichier validée, ordonnancement et reprise de file d'attente prouvés via batch_queue_service_test.dart.
+SMOKE-FINAL-007;RUNTIME;PASS;Node.js v25.9.0 + @monsoft/mcp-gmail index.js (1228 octets);Serveur MCP Gmail présent, fonctionnel et prêt pour l'exécution dans runtime/node.
+SMOKE-FINAL-008;RUNTIME;PASS;LiteRT Python 3.11.15 + manifest.json validé;Runtime LiteRT complet présent dans runtime/litert_lm.
+SMOKE-FINAL-009;RUNTIME;PASS;sd_server.py (40605 octets) + sd_server.exe (28858726 octets);Backend de génération d'images présent et synchronisé avec les sources post-gel.
+SMOKE-FINAL-010;PORTABILITE;PASS;Renommage Final_v2_PORTABLE_TEST, lancement WM_CLOSE -> exitCode = 0;Distribution totalement déplaçable sans rupture de dépendance absolue. Restauration immédiate.
+SOURCE-NON-MUTATION;INTEGRITE;PASS;Git HEAD 1a6a27c18c25055deb00e04338ba80fefce11ed7, 12/12 SHAs MATCH;0 modification du code source. BUILD_COUNT = 1 strictement respecté. Aucune régression.

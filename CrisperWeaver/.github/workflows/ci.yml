@@ -1,0 +1,272 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: "3.44.1"
+  # Where we expect the sibling CrispASR checkout to live. The Dart pubspec
+  # references the Flutter package inside it at `../CrispASR/flutter/crispasr`.
+  # Pinned to release tags rather than `main` for reproducible builds.
+  #
+  # These are shared clones that parallel workers rebuild, and the drift
+  # is not hypothetical: on 2026-08-01 a `main` pin put the app 13
+  # backends behind the engine and broke the build outright when
+  # CrispasrSpeakerDB gained a required consent argument (PLAN §15.1a,
+  # §15.7). Worse, one of those backends appeared while CrispASR's git
+  # HEAD was UNCHANGED — a worker had rebuilt the dylib — so pinning the
+  # ref is necessary but not sufficient; it bounds the source, not the
+  # artefact.
+  #
+  # Bumping: raise the tag, run `flutter analyze` + the full test suite
+  # (backend_dispatch_test is the drift canary), catalogue any new
+  # backends or add them to its documented `engineOnly` set, then commit
+  # the bump on its own so a regression bisects cleanly.
+  CRISPASR_REPO: CrispStrobe/CrispASR
+  CRISPASR_REF: v0.8.25
+  # CrispEmbed — on-device embeddings. pubspec path: `../CrispEmbed/flutter/crispembed`.
+  CRISPEMBED_REPO: CrispStrobe/CrispEmbed
+  CRISPEMBED_REF: v0.17.3
+  # glint — MP3/AAC/Opus codec suite. pubspec path: `../glint/bindings/dart`.
+  GLINT_REPO: CrispStrobe/glint
+  # NB glint uses a per-package tag scheme; the bare `vX.Y.Z` tags are a
+  # stale legacy series (v0.9.0 still carries Dart package 0.1.0).
+  GLINT_REF: glint_audio-v0.11.0
+
+jobs:
+  analyze-and-test:
+    name: Analyze + test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Check out CrisperWeaver
+        uses: actions/checkout@v5
+        with:
+          path: repos/CrisperWeaver
+
+      - name: Check out sibling CrispASR (Dart FFI package)
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.CRISPASR_REPO }}
+          ref: ${{ env.CRISPASR_REF }}
+          path: repos/CrispASR
+
+      - name: Check out sibling CrispEmbed (Dart FFI package)
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.CRISPEMBED_REPO }}
+          ref: ${{ env.CRISPEMBED_REF }}
+          path: repos/CrispEmbed
+
+      - name: Check out sibling glint (Dart FFI package)
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.GLINT_REPO }}
+          ref: ${{ env.GLINT_REF }}
+          path: repos/glint
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Pub get
+        working-directory: repos/CrisperWeaver
+        run: flutter pub get
+
+      - name: Generate build info (git hash + timestamp)
+        working-directory: repos/CrisperWeaver
+        run: bash scripts/gen_build_info.sh
+
+      - name: Dart analyze (treat errors as failures only)
+        working-directory: repos/CrisperWeaver
+        # `flutter analyze` exits non-zero on infos/warnings too. We only want
+        # to fail on errors; infos/warnings are surfaced in the log.
+        run: |
+          set +e
+          flutter analyze --no-fatal-infos --no-fatal-warnings
+          status=$?
+          if [ $status -ne 0 ]; then
+            echo "::error::flutter analyze reported errors"
+            exit $status
+          fi
+
+      - name: Tests
+        working-directory: repos/CrisperWeaver
+        run: flutter test --reporter expanded
+
+  build-macos:
+    name: Build macOS (.app)
+    runs-on: macos-latest
+    needs: analyze-and-test
+    # CrispASR keeps growing (more backends → a bigger libwhisper.dylib link).
+    # An unbounded build OOM-kills the macos-latest runner mid-link (exit 143 /
+    # "runner received a shutdown signal"), exactly as release.yml's macOS job
+    # hit — release.yml fixed it with --parallel 2 and passes on the same
+    # commit. Give the job a hard ceiling so a hung/thrashing link fails fast
+    # instead of burning the full 6 h default.
+    timeout-minutes: 90
+    steps:
+      - name: Check out CrisperWeaver
+        uses: actions/checkout@v5
+        with:
+          path: repos/CrisperWeaver
+
+      - name: Check out sibling CrispASR
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.CRISPASR_REPO }}
+          ref: ${{ env.CRISPASR_REF }}
+          path: repos/CrispASR
+          submodules: recursive
+
+      - name: Check out sibling CrispEmbed
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.CRISPEMBED_REPO }}
+          ref: ${{ env.CRISPEMBED_REF }}
+          path: repos/CrispEmbed
+
+      - name: Check out sibling glint
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.GLINT_REPO }}
+          ref: ${{ env.GLINT_REF }}
+          path: repos/glint
+          submodules: recursive
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      # Cache the CrispASR native build keyed on the sibling commit hash.
+      # The cmake/ninja build is the most expensive CI step (~15-30 min);
+      # skipping it when the engine hasn't changed saves significant time.
+      - name: Get CrispASR commit hash
+        id: crispasr-hash
+        run: echo "hash=$(git -C repos/CrispASR rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache CrispASR build
+        id: cache-crispasr
+        uses: actions/cache@v4
+        with:
+          path: repos/CrispASR/build
+          key: crispasr-macos-${{ steps.crispasr-hash.outputs.hash }}
+
+      - name: Build CrispASR + Flutter macOS app (one shot via script)
+        working-directory: repos/CrisperWeaver
+        env:
+          CRISPASR_DIR: ${{ github.workspace }}/repos/CrispASR
+          # Cap parallelism so the heavy libwhisper.dylib link doesn't run
+          # alongside a swarm of other jobs and blow the runner's RAM (exit
+          # 143). Mirrors release.yml's `--parallel 2`; build_macos.sh maps
+          # JOBS -> `cmake --build -j`.
+          JOBS: "2"
+        run: bash scripts/build_macos.sh debug
+
+      - name: Upload .app artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: crisper_weaver-macos-debug
+          path: repos/CrisperWeaver/build/macos/Build/Products/Debug/crisper_weaver.app
+          if-no-files-found: error
+          retention-days: 14
+
+  build-linux:
+    name: Build Linux desktop
+    runs-on: ubuntu-latest
+    needs: analyze-and-test
+    steps:
+      - name: Check out CrisperWeaver
+        uses: actions/checkout@v5
+        with:
+          path: repos/CrisperWeaver
+
+      - name: Check out sibling CrispASR
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.CRISPASR_REPO }}
+          ref: ${{ env.CRISPASR_REF }}
+          path: repos/CrispASR
+          submodules: recursive
+
+      - name: Check out sibling CrispEmbed
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.CRISPEMBED_REPO }}
+          ref: ${{ env.CRISPEMBED_REF }}
+          path: repos/CrispEmbed
+
+      - name: Check out sibling glint
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.GLINT_REPO }}
+          ref: ${{ env.GLINT_REF }}
+          path: repos/glint
+          submodules: recursive
+
+      - name: Install Linux desktop toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang cmake ninja-build pkg-config \
+            libgtk-3-dev liblzma-dev libstdc++-12-dev \
+            libsecret-1-dev libjsoncpp-dev libglu1-mesa \
+            libkeybinder-3.0-dev libayatana-appindicator3-dev
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Enable linux desktop
+        run: flutter config --enable-linux-desktop
+
+      - name: Get CrispASR commit hash
+        id: crispasr-hash
+        run: echo "hash=$(git -C repos/CrispASR rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache CrispASR build
+        id: cache-crispasr
+        uses: actions/cache@v4
+        with:
+          path: repos/CrispASR/build
+          key: crispasr-linux-${{ steps.crispasr-hash.outputs.hash }}
+
+      - name: Build CrispASR + Flutter Linux desktop (one shot via script)
+        working-directory: repos/CrisperWeaver
+        env:
+          CRISPASR_DIR: ${{ github.workspace }}/repos/CrispASR
+          # Cap parallelism so the heavy CrispASR compile doesn't get
+          # OOM-killed (exit 143) on the runner — same guard the release
+          # workflow's macOS job uses (--parallel 2). Unbounded --parallel
+          # spawns one g++ per core, each eating GBs on the large TUs.
+          JOBS: 2
+        run: bash scripts/build_linux.sh debug
+
+      - name: Upload Linux bundle
+        uses: actions/upload-artifact@v6
+        with:
+          name: crisper_weaver-linux-debug
+          path: repos/CrisperWeaver/build/linux/x64/debug/bundle
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,15 @@
+# Relocatable pkg-config file: paths are derived from the .pc file's own
+# location at use-time, so the install prefix can move (e.g. when shipping
+# the lib in a tarball that users extract into /opt or $HOME) without
+# editing this file.
+prefix=${pcfiledir}/../..
+exec_prefix=${prefix}
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: crispembed
+Description: ggml-based text embedding inference engine (BERT/XLM-R/Qwen3/Gemma3)
+URL: https://github.com/CrispStrobe/CrispEmbed
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -lcrispembed
+Cflags: -I${includedir}

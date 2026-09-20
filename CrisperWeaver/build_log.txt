@@ -1,0 +1,3 @@
+Le système ne peut exécuter le programme spécifié.
+Error: PowerShell executable not found.                        
+       Either pwsh.exe or PowerShell.exe must be in your PATH. 

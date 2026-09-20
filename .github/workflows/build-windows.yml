@@ -1,0 +1,38 @@
+name: Windows Source Build Validation
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.x'
+          channel: 'stable'
+          cache: true
+
+      - name: Verify Environment
+        shell: pwsh
+        run: |
+          scripts/verify_environment.ps1
+
+      - name: Bootstrap Dependencies
+        shell: pwsh
+        run: |
+          scripts/bootstrap.ps1
+
+      - name: Flutter Analyze
+        shell: pwsh
+        run: |
+          cd CrisperWeaver
+          flutter analyze lib/

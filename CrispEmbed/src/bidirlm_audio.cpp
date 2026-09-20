@@ -1,0 +1,156 @@
+// bidirlm_audio.cpp — thin wrapper that adapts crisp_audio for BidirLM-Omni
+// in CrispEmbed.
+//
+// crisp_audio (from the configured CrispASR checkout) does the heavy lifting: log-mel,
+// conv stem, transformer encoder, projection. This file:
+//
+//   1. Recognizes a BidirLM-Omni audio GGUF at load time.
+//   2. Calls crisp_audio_init_from_file with the right tensor/meta prefix.
+//   3. Translates crisp_audio_encode's per-frame output (n_frames, output_dim)
+//      into a single L2-normalized embedding via mean pooling, matching the
+//      `model.encode(audio)` behavior of sentence-transformers.
+//
+// Built only when CRISPEMBED_HAS_CRISP_AUDIO is defined (gated by CMake).
+
+#include "crispembed.h"
+
+#ifdef CRISPEMBED_HAS_CRISP_AUDIO
+#include "crisp_audio.h"
+#include "core/env_gate.h"
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <vector>
+
+namespace bidirlm_audio {
+
+struct context {
+    crisp_audio_context * ca = nullptr;
+    int output_dim = 0;
+    std::vector<float> last_pooled; // owned buffer returned to caller
+    bool bench = false;
+
+    ~context() {
+        if (ca) crisp_audio_free(ca);
+    }
+};
+
+context * open(const char * gguf_path, int n_threads, bool use_gpu) {
+    crisp_audio_params p = crisp_audio_params_default();
+    p.n_threads = n_threads;
+    p.use_gpu = use_gpu;
+    // BidirLM-Omni's converter writes audio tensors under "audio_tower." and
+    // metadata under "bidirlm.audio.". crisp_audio also has a fallback to
+    // qwen3-asr's keys when the BidirLM ones aren't present, so passing the
+    // BidirLM prefix here is harmless even on a qwen3-asr GGUF.
+    p.tensor_prefix = "audio_tower.";
+    p.meta_prefix = "bidirlm.audio.";
+    p.dialect = CRISP_AUDIO_DIALECT_QWEN_OMNI;
+
+    crisp_audio_context * ca = crisp_audio_init_from_file(gguf_path, &p);
+    if (!ca) return nullptr;
+
+    auto * ctx = new context();
+    ctx->ca = ca;
+    ctx->output_dim = crisp_audio_output_dim(ca);
+    ctx->bench = core_env::on("CRISPEMBED_BIDIRLM_AUDIO_BENCH");
+    return ctx;
+}
+
+// Reproduce HF's _get_feat_extract_output_lengths: 3 successive
+// stride-2 conv kernels with k=3, pad=1 → floor((L-1)/2)+1 each pass.
+static int conv_out_len_3x(int t_len) {
+    auto step = [](int x) { return (x - 1) / 2 + 1; };
+    return step(step(step(t_len)));
+}
+
+const float * encode(context * ctx, const float * pcm, int n_samples, int * out_dim) {
+    if (!ctx || !ctx->ca || !pcm || n_samples <= 0) return nullptr;
+
+    const bool bench = ctx->bench;
+    auto t_total = std::chrono::steady_clock::now();
+
+    int n_mels = 0, T_mel = 0;
+    auto t_mel0 = std::chrono::steady_clock::now();
+    float * mel = crisp_audio_compute_mel(ctx->ca, pcm, n_samples, &n_mels, &T_mel);
+    if (bench) {
+        auto t_mel1 = std::chrono::steady_clock::now();
+        fprintf(stderr, "[bidirlm-audio-bench] mel: %.3f ms\n",
+                std::chrono::duration<double, std::milli>(t_mel1 - t_mel0).count());
+    }
+    if (!mel) return nullptr;
+
+    int n_frames_padded = 0, dim = 0;
+    auto t_enc0 = std::chrono::steady_clock::now();
+    float * enc = crisp_audio_encode(ctx->ca, mel, n_mels, T_mel, &n_frames_padded, &dim);
+    std::free(mel);
+    if (bench) {
+        auto t_enc1 = std::chrono::steady_clock::now();
+        fprintf(stderr, "[bidirlm-audio-bench] encode: %.3f ms\n",
+                std::chrono::duration<double, std::milli>(t_enc1 - t_enc0).count());
+    }
+    if (!enc || n_frames_padded <= 0 || dim <= 0) {
+        std::free(enc);
+        return nullptr;
+    }
+
+    // crisp_audio_encode pads each chunk's mel to chunk_T frames and runs
+    // the encoder on the full padded sequence. For a BidirLM-style mean
+    // pool we need to skip the silence-padded frames at the end of the
+    // tail chunk; the HF reference filters them out via padded_mask_after_cnn
+    // BEFORE the encoder runs (line 353 of modeling_bidirlm_omni.py), so
+    // the cleanest mid-graph alignment is unattainable from here, but
+    // skipping them in the pooling loop catches the dominant error term.
+    auto t_pool0 = std::chrono::steady_clock::now();
+    const int n_window = crisp_audio_n_window(ctx->ca);
+    const int chunk_T = n_window > 0 ? n_window * 2 : 200; // BidirLM default
+    const int num_chunks = (T_mel + chunk_T - 1) / chunk_T;
+    const int T_chunk_out = conv_out_len_3x(chunk_T);
+
+    ctx->last_pooled.assign(dim, 0.0f);
+    int n_valid = 0;
+    for (int c = 0; c < num_chunks; c++) {
+        const int t_start_mel = c * chunk_T;
+        const int t_len_mel = std::min(chunk_T, T_mel - t_start_mel);
+        const int valid = conv_out_len_3x(t_len_mel);
+        const int frame_off = c * T_chunk_out;
+        for (int f = 0; f < valid; f++) {
+            const float * row = enc + (size_t)(frame_off + f) * dim;
+            for (int i = 0; i < dim; i++) ctx->last_pooled[i] += row[i];
+        }
+        n_valid += valid;
+    }
+    if (n_valid == 0) n_valid = n_frames_padded; // safety net
+
+    const float inv = 1.0f / (float)n_valid;
+    float norm_sq = 0.0f;
+    for (int i = 0; i < dim; i++) {
+        ctx->last_pooled[i] *= inv;
+        norm_sq += ctx->last_pooled[i] * ctx->last_pooled[i];
+    }
+    const float norm = std::sqrt(std::max(norm_sq, 1e-12f));
+    for (int i = 0; i < dim; i++) ctx->last_pooled[i] /= norm;
+
+    if (bench) {
+        auto t_pool1 = std::chrono::steady_clock::now();
+        auto t_total1 = std::chrono::steady_clock::now();
+        fprintf(stderr, "[bidirlm-audio-bench] pool+norm: %.3f ms\n",
+                std::chrono::duration<double, std::milli>(t_pool1 - t_pool0).count());
+        fprintf(stderr, "[bidirlm-audio-bench] total: %.3f ms\n",
+                std::chrono::duration<double, std::milli>(t_total1 - t_total).count());
+    }
+
+    std::free(enc);
+    if (out_dim) *out_dim = dim;
+    return ctx->last_pooled.data();
+}
+
+void close(context * ctx) {
+    delete ctx;
+}
+
+} // namespace bidirlm_audio
+
+#endif // CRISPEMBED_HAS_CRISP_AUDIO

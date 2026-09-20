@@ -1,0 +1,132 @@
+name: Main health
+
+# Why this exists (A4): main went red 2026-07-14 and stayed red until 07-16,
+# when someone happened to push onto it. The cause was toolchain drift (an
+# unpinned setup-emsdk resolving `latest` to a broken 6.0.3), so NO commit
+# introduced it and nobody was notified — CI only speaks when you push.
+#
+# This job asks once a day whether main's key workflows are actually green and
+# FAILS if they are not, so a red main surfaces on its own (GitHub notifies on a
+# failed scheduled run). It deliberately does not open issues: per the repo's
+# workflow notes, internal tracking lives in PLAN.md/HISTORY.md and issues are
+# for outside reporters.
+#
+# tools/check_workflow_pins.sh prevents the specific drift class from returning;
+# this catches the general case (upstream rot, a dependency vanishing, etc.).
+
+on:
+  schedule:
+    - cron: '17 6 * * *'   # daily, offset off the hour
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  check:
+    name: main is green
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Report latest conclusion of key workflows on main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Workflows whose red state means main is genuinely broken.
+          # EXACT names, matched with jq index() — NOT a regex. Two of these
+          # contain parentheses, which as regex metacharacters silently match
+          # nothing, so a test()-based filter quietly skips the very workflows
+          # this job exists to watch (they were the ones red in the outage).
+          WATCH_NAMES: >-
+            ["Build","Build WASM","Deploy WASM demo (GitHub Pages)","Lint",
+             "Build WASM (text embeddings)"]
+        run: |
+          set -uo pipefail
+          red=0
+          checked=0
+          while IFS=$'\t' read -r name conclusion sha; do
+            [ -z "${name:-}" ] && continue
+            checked=$((checked + 1))
+            printf '  %-38s %-10s %s\n' "$name" "$conclusion" "${sha:0:9}"
+            case "$conclusion" in
+              success|skipped|"") ;;
+              cancelled) ;;  # concurrent pushes cancel each other; not a real failure
+              *) red=$((red + 1)) ;;
+            esac
+          done < <(
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs?branch=main&status=completed&per_page=100" 2>/dev/null \
+              | jq -r --argjson names "$WATCH_NAMES" \
+                  '[.workflow_runs[] | select(.name as $n | $names | index($n))]
+                   | group_by(.name)[]
+                   | max_by(.run_started_at)
+                   | [.name, .conclusion, .head_sha] | @tsv' 2>/dev/null || true
+          )
+
+          # A watched workflow that returns NO rows is itself a red flag: either
+          # it was renamed (so this list is stale) or it stopped running.
+          missing=$(jq -r --argjson n "$WATCH_NAMES" -n '$n | length')
+          if [ "$checked" -lt "$missing" ]; then
+            echo "::warning::only $checked of $missing watched workflows reported — renamed or not running?"
+          fi
+
+          if [ "$checked" -eq 0 ]; then
+            echo "::warning::no matching completed runs found on main — nothing to assert"
+            exit 0
+          fi
+          if [ "$red" -ne 0 ]; then
+            echo "::error::main is RED — $red of $checked watched workflow(s) last concluded in failure. \
+          Nobody has to push for this to matter: toolchain/upstream drift breaks main with no commit."
+            exit 1
+          fi
+          echo "OK: all $checked watched workflow(s) are green on main."
+
+  licenses:
+    name: model licences match upstream
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install --disable-pip-version-check huggingface_hub
+
+      # Why this lives in the daily job and not in Lint: it asks huggingface.co
+      # about ~300 repos, so it is slow and network-bound, and what it catches
+      # is UPSTREAM drift — a model card relicensed after we shipped it. That
+      # is the same "breaks with no commit of ours" class main-health exists
+      # for, and it would be pure flake on every push.
+      #
+      # Transient HF failures degrade to "?" rows rather than "✗": a mismatch
+      # needs both sides non-empty, so a 429 or a timeout cannot fail this.
+      - name: Cross-check registry licences against upstream model cards
+        run: python tests/check_registry_licenses.py
+
+      # Same rationale for living here: one API call per re-host repo, so it is
+      # network-bound and would flake on every push. What it catches is a pin
+      # that no longer matches what the re-host serves — either a model was
+      # legitimately re-uploaded and model_hashes.h needs regenerating, or the
+      # content changed underneath us, which is the case worth a red build.
+      # A registry entry added without re-running the generator also lands
+      # here, since an unpinned URL now refuses to download at all.
+      # HF_TOKEN is optional: the anonymous API is rate-limited per IP and this
+      # walks ~240 repos, which was enough to get every probe 429'd on
+      # 2026-08-04. With no secret configured this is an empty string and the
+      # script falls back to its retry/backoff. Either way a rate limit is now
+      # reported as INCONCLUSIVE, never as "the header is stale".
+      - name: Verify model SHA-256 pins are current
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python tools/fetch_model_hashes.py --check
+
+      # The declared size is what a user sees before agreeing to a download.
+      # Same daily-job rationale (one API call per repo), and it catches the
+      # same class of drift as the pin check: a re-upload at a different quant.
+      - name: Verify registry sizes match the published files
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python tools/fetch_model_hashes.py --check-sizes

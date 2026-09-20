@@ -1,0 +1,184 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIconFile</key>
+	<string></string>
+	<!-- Mac App Store validation rejects a bundle without a category. -->
+	<!-- Without this the macOS build lands in App Store Connect as
+	     MISSING_EXPORT_COMPLIANCE and cannot be assigned to a TestFlight
+	     group until someone answers the question by hand. ios/Runner has
+	     carried it for releases; macos/Runner never did. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(FLUTTER_BUILD_NAME)</string>
+	<key>CFBundleVersion</key>
+	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>$(PRODUCT_COPYRIGHT)</string>
+	<key>NSMainNibFile</key>
+	<string>MainMenu</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>CrisperWeaver records audio from the microphone so it can be transcribed locally on your Mac.</string>
+	<!--
+	  macOS Services menu integration — adds a "Transcribe with
+	  CrisperWeaver" entry under right-click → Services in Finder
+	  (and any other app that respects the Services menu) for
+	  audio + SRT / VTT files. When invoked, the system launches
+	  CrisperWeaver if needed and calls the @objc handler in
+	  AppDelegate.swift, which feeds the file URLs into
+	  OpenWithReceiver — same triage path as Finder Open With.
+
+	  Naming:
+	    NSMessage      → selector name minus the
+	                      :userData:error: suffix; AppDelegate
+	                      implements `transcribeAudio(_:userData:error:)`.
+	    NSPortName     → must match the service-provider name we
+	                      register with NSApp.servicesProvider;
+	                      "CrisperWeaver" doubles as the Services
+	                      sub-menu group header.
+	    NSSendFileTypes → which UTIs make the menu item appear.
+	                      Audio uses the catch-all public.audio,
+	                      subtitles use our own exported UTIs
+	                      declared in UTExportedTypeDeclarations.
+	-->
+	<key>NSServices</key>
+	<array>
+		<dict>
+			<key>NSMessage</key>
+			<string>transcribeAudio</string>
+			<key>NSPortName</key>
+			<string>CrisperWeaver</string>
+			<key>NSMenuItem</key>
+			<dict>
+				<key>default</key>
+				<string>Transcribe with CrisperWeaver</string>
+			</dict>
+			<key>NSSendTypes</key>
+			<array>
+				<string>NSFilenamesPboardType</string>
+				<string>public.file-url</string>
+			</array>
+			<key>NSSendFileTypes</key>
+			<array>
+				<string>public.audio</string>
+				<string>com.crispstrobe.crisperweaver.srt</string>
+				<string>com.crispstrobe.crisperweaver.vtt</string>
+			</array>
+			<!-- The handler returns nothing back to the source app
+			     — pure intake. Declaring NSReturnTypes as an empty
+			     array tells the system "this is a one-way send",
+			     which is what NSPasteboard semantically expects. -->
+			<key>NSReturnTypes</key>
+			<array/>
+		</dict>
+	</array>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Audio</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.audio</string>
+				<string>public.mp3</string>
+				<string>public.wav</string>
+				<string>public.mpeg-4-audio</string>
+				<string>com.apple.m4a-audio</string>
+				<string>org.xiph.flac</string>
+				<string>org.xiph.ogg-vorbis</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Subtitle</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.crispstrobe.crisperweaver.srt</string>
+				<string>com.crispstrobe.crisperweaver.vtt</string>
+			</array>
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>srt</string>
+				<string>vtt</string>
+			</array>
+		</dict>
+	</array>
+	<!-- Subtitle UTI declarations — same identifiers the iOS
+	     side declares, so a file originating from one platform
+	     opens on the other without UTI mismatch. -->
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.crispstrobe.crisperweaver.srt</string>
+			<key>UTTypeDescription</key>
+			<string>SubRip Subtitle</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.plain-text</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>srt</string>
+				</array>
+				<key>public.mime-type</key>
+				<array>
+					<string>application/x-subrip</string>
+					<string>text/srt</string>
+				</array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.crispstrobe.crisperweaver.vtt</string>
+			<key>UTTypeDescription</key>
+			<string>WebVTT Subtitle</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.plain-text</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>vtt</string>
+				</array>
+				<key>public.mime-type</key>
+				<array>
+					<string>text/vtt</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
+</dict>
+</plist>

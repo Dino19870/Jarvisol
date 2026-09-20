@@ -1,0 +1,24 @@
+Lot,Identifiant,Nature,Description,Statut,Details
+CORR-05,TNR-025,TNR,Portabilité MCP Gmail sans Node hôte dans PATH,PASS,"Launcher résout runtime/node portable, PATH injecté, isolation hôte"
+CORR-05,TNR-059,TNR,Commit transactionnel OAuth Gmail,PASS,Commit .tmp + length>0 + .bak_prev + rename atomique + rejet faute 0-octet
+CORR-05,TNR-135,Canary,Canary non-régression MCP Gmail nominal,PASS,Plan d'action draft et signatures MCP vérifiés
+CORR-05,CAN-GMAIL-READ,Canary,Requête nominale Gmail MCP (lecture / recherche),PASS,Structure initialize et tools/call validées
+CORR-05,CAN-GMAIL-RECENCY,Canary,Respect du filtre recent temporel,PASS,"Filtres newer_than:30d, newer_than:7d, newer_than:1d validés"
+CORR-05,CAN-GMAIL-GATING,Canary,"Gating actions écriture sans args (MCP-006, MCP-007, MCP-010)",PASS,"Blocage sécurisé si to, subject, body, messageId ou name manquant"
+CORR-05,CAN-GMAIL-CREDS-0B,Canary,Résilience credentials 0-octet ou corrompus,PASS,Fail-closed immédiat avec invitation explicite à relancer LOGIN_GMAIL.bat
+CORR-06,TNR-070,TNR,Frontières exécution LiteRT - pas de recours PATH hôte,PASS,"Mutualisation runtime CLI portable, échec explicite sans binaire système"
+CORR-06,TNR-071,TNR,Validation taille/intégrité modèle LiteRT,PASS,"Rejet fichiers incomplets (<95% sizeBytes) ou 0-octet, pas de faux succès"
+CORR-06,TNR-094,TNR,Persistence portable paramètres par modèle LiteRT,PASS,"Température, topK, maxTokens enregistrés dans Release/data/preferences.json"
+CORR-06,TNR-068,TNR,Sonde HTTP /v1/models sur port 9379,PASS,"Vérification applicative HTTP 200, rejet des occupants TCP tiers sans les tuer"
+CORR-06,TNR-069,TNR,Timeout readiness serveur possédé & process tree kill,PASS,"taskkill /T /F sur PID possédé, attente, nettoyage ownership et réessai propre"
+CORR-06,TNR-131,Canary,Intégrité et structure catalogue LiteRT,PASS,"Allowlist chargée, tous modèles valides avec defaultConfig"
+CORR-06,TNR-132,Canary,Détection dynamique encodeur vision LiteRT,PASS,hasVisionEncoder vérifié dynamiquement
+CORR-06,TNR-133,Canary,Résolution endpoints et modèles locaux LiteRT,PASS,Mapping IDs nominaux gemma/qwen vérifié
+CORR-06,CAMP-LLM-001,Canary,Campagne canari LLM local complet,PASS,"Découverte, probing port 9379, streaming et arrêt propre validés"
+CORR-07,TNR-027,TNR,Mise à jour sécurisée yt-dlp transactionnelle,PASS,"Staging .tmp, validation taille/version, sauvegarde .bak_prev, remplacement atomique, rollback"
+CORR-07,TNR-076,TNR,Runner sécurisé playlists et commentaires,PASS,"Args séparés, vidage complet stdout/stderr, exitCode non nul en erreur, annulation"
+CORR-07,TNR-136,Canary,Canary non-régression Web Media nominal,PASS,"Exécutables yt-dlp/ffmpeg/deno détectés, sonde probe OK"
+CORR-07,CAN-WEB-METADATA,Canary,Extraction métadonnées nominale,PASS,"getMetadata extrait titre, durée et formats sans hang"
+CORR-07,CAN-WEB-AUDIO-DL,Canary,Téléchargement flux audio,PASS,downloadAudio extrait fichier audio valide avec progression
+CORR-07,CAN-WEB-BATCH,Canary,Envoi vers Batch depuis playlist,PASS,enumeratePlaylist alimente le batch avec pagination propre
+CORR-07,CAN-WEB-SUBTITLES,Canary,Extraction de sous-titres,PASS,downloadSubtitles génère sous-titre .srt avec watchdog d'inactivité

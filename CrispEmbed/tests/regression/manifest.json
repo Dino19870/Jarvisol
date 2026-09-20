@@ -1,0 +1,1175 @@
+{
+  "_comment": "CrispEmbed OCR portfolio regression manifest. Each model entry pins the GGUF under test (repo/file/revision), a fixture image, a proven-correct expected_text (lenient CER match), and an OPTIONAL diff block. The diff block runs test-<model>-diff against a reference GGUF downloaded from HF; if that ref is absent on HF the diff step is SKIPPED (opt-in by ref presence). expected_text=null means 'not captured yet' \u2014 run with --rebake on the GPU portfolio kernel, verify the output by eye, and paste it in. See README.md. This suite exists because a vision-neck permute regression (3fb1f8e) shipped garbage OCR that a pure exit-code smoke test could not catch.",
+  "version": 1,
+  "match_defaults": {
+    "max_cer": 0.1,
+    "_note": "lenient char-error-rate after normalising case/punctuation/whitespace; OCR is not byte-exact across builds"
+  },
+  "diff_defaults": {
+    "thresholds": {
+      "*": 0.999
+    },
+    "_note": "global per-stage cos_min floor; override per-stage inside a model's diff.thresholds"
+  },
+  "models": [
+    {
+      "name": "got-ocr2",
+      "engine": "got-ocr2",
+      "gguf": {
+        "repo": "cstr/got-ocr2-crispembed-GGUF",
+        "file": "got-ocr2-q4_k.gguf",
+        "revision": "a74647673f7bf988756fa813766501284d0507c9",
+        "approx_size_mb": 445
+      },
+      "sample": "tests/regression/images/fox.png",
+      "expected_text": "The quick brown fox jumps over the lazy dog. 12345",
+      "expected_text_source": "captured 2026-07-01 on main (post-7f43e4d neck-permute fix), verified correct on both Metal and CPU (GOT_OCR_FORCE_CPU=1) at q4_k/q8_0/f16.",
+      "match": {
+        "max_cer": 0.1
+      },
+      "diff": {
+        "binary": "test-got-ocr-diff",
+        "ref": {
+          "repo": "cstr/got-ocr2-crispembed-GGUF",
+          "file": "got-ocr2-ref-full.gguf",
+          "revision": "main"
+        },
+        "thresholds": {
+          "*": 0.95
+        },
+        "_note": "test-got-ocr-diff <gguf> <ref>. Vision cos varies by backend: ~0.998 CPU, 0.9999 Metal, but ~0.982 on Kaggle CUDA (T4/P100) \u2014 so the floor is 0.95 to absorb backend FP variance while still catching a real regression (a scrambled-permute craters vis_proj_output to ~0). Decoder layers stay ~0.9998 everywhere."
+      }
+    },
+    {
+      "name": "glm-ocr",
+      "engine": "glm-ocr",
+      "gguf": {
+        "repo": "cstr/glm-ocr-crispembed-GGUF",
+        "file": "glm-ocr-q8_0.gguf",
+        "revision": "main",
+        "approx_size_mb": 950
+      },
+      "sample": "tests/regression/images/fox.png",
+      "expected_text": "The quick brown fox jumps over the lazy dog. 12345",
+      "match": {
+        "max_cer": 0.12
+      }
+    },
+    {
+      "name": "internvl2-1b",
+      "engine": "internvl2",
+      "gguf": {
+        "repo": "cstr/internvl2-1b-crispembed-GGUF",
+        "file": "internvl2-1b-q4_k.gguf",
+        "revision": "main",
+        "approx_size_mb": 600
+      },
+      "sample": "tests/regression/images/fox.png",
+      "expected_text": "The quick brown fox jumps over the lazy dog. 12345",
+      "expected_text_source": "captured 2026-07-01 on M1 Metal after reverting the c714758 vision-graph cache to fresh-build-per-tile. fox.png dynamic-tiles to 5 tiles, so this entry is the regression guard for the cross-tile SIGSEGV/hang \u2014 a re-crash makes crispembed --ocr exit non-zero and FAILs here.",
+      "match": {
+        "max_cer": 0.12
+      },
+      "diff": {
+        "binary": "test-internvl2-diff",
+        "ref": {
+          "repo": "cstr/internvl2-1b-crispembed-GGUF",
+          "file": "internvl2-1b-ref.gguf"
+        },
+        "thresholds": {
+          "*": 0.995
+        }
+      }
+    },
+    {
+      "name": "qwen2vl-3b",
+      "engine": "qwen2vl",
+      "gguf": {
+        "repo": "cstr/qwen2.5-vl-3b-crispembed-GGUF",
+        "file": "qwen2.5-vl-3b-q4_k.gguf",
+        "revision": "main",
+        "approx_size_mb": 2200
+      },
+      "sample": "tests/regression/images/fox.png",
+      "expected_text": "The quick brown fox jumps over the lazy dog. 12345",
+      "expected_text_source": "captured 2026-07-01 on M4 Metal + CPU (CRISPEMBED_FORCE_CPU=1) at q4_k after the vision RoPE merge-block-order + merger consecutive-grouping + windowed-attention + OCR-prompt fixes. Previously null (never validated end-to-end); the engine hallucinated a math description over garbled vision tokens.",
+      "match": {
+        "max_cer": 0.12
+      },
+      "diff": {
+        "binary": "test-qwen2vl-diff",
+        "ref": {
+          "repo": "cstr/qwen2.5-vl-3b-crispembed-GGUF",
+          "file": "qwen2.5-vl-3b-ref.gguf"
+        },
+        "thresholds": {
+          "*": 0.995
+        }
+      }
+    },
+    {
+      "name": "qwen3vl-2b",
+      "engine": "qwen2vl",
+      "gguf": {
+        "repo": "cstr/qwen3-vl-2b-crispembed-gguf",
+        "file": "qwen3-vl-2b-q4_k.gguf",
+        "revision": "main",
+        "approx_size_mb": 1590
+      },
+      "sample": "tests/regression/images/fox.png",
+      "expected_text": "The quick brown fox jumps over the lazy dog. 12345",
+      "expected_text_source": "captured 2026-07-02 on M4 Metal + CPU (CRISPEMBED_FORCE_CPU=1) at q4_k. Guards the Qwen3-VL vision preprocessing-order path (shared qwen2vl_ocr engine, is_qwen2_vl=true + deepstack): rope + merger grouping must be unconditional merge-block/consecutive. A gate keyed off is_qwen2_vl or deepstack re-garbles this (T11123456789\u2026).",
+      "match": {
+        "max_cer": 0.12
+      }
+    },
+    {
+      "name": "granite-vision",
+      "engine": "granite-vision",
+      "gguf": {
+        "repo": "cstr/granite-vision-crispembed-GGUF",
+        "file": "granite-vision-3.3-2b-q8_0.gguf",
+        "revision": "main",
+        "approx_size_mb": 1800
+      },
+      "sample": "tests/regression/images/fox.png",
+      "expected_text": "The quick brown fox jumps over the lazy dog. 12345",
+      "match": {
+        "_note": "0.18 absorbs cross-backend OCR drift: q8_0 granite reads the fox line on Metal/CPU but ~cer 0.16 on CUDA (a few chars) — a crater still fails.",
+        "max_cer": 0.18
+      },
+      "diff": {
+        "binary": "test-granite-vision-diff",
+        "ref": {
+          "repo": "cstr/granite-vision-crispembed-GGUF",
+          "file": "granite-vision-ref.gguf",
+          "revision": "main"
+        },
+        "thresholds": {
+          "*": 0.95
+        }
+      }
+    },
+    {
+      "name": "lightonocr",
+      "engine": "lightonocr",
+      "gguf": {
+        "repo": "cstr/lightonocr-GGUF",
+        "file": "lightonocr-1b-q4_k.gguf",
+        "revision": "main",
+        "approx_size_mb": 622
+      },
+      "sample": "tests/regression/images/fox.png",
+      "expected_text": null,
+      "match": {
+        "max_cer": 0.12
+      }
+    },
+    {
+      "name": "paddleocr-vl",
+      "engine": "paddleocr-vl",
+      "gguf": {
+        "repo": "cstr/paddleocr-vl-0.9b-GGUF",
+        "file": "paddleocr-vl-0.9b-q8_0.gguf",
+        "revision": "main",
+        "approx_size_mb": 700
+      },
+      "sample": "tests/regression/images/fox.png",
+      "expected_text": "The quick brown fox jumps over the lazy dog.",
+      "match": {
+        "max_cer": 0.12
+      },
+      "diff": {
+        "binary": "test-paddleocr-vl-diff",
+        "ref": {
+          "repo": "cstr/paddleocr-vl-0.9b-GGUF",
+          "file": "paddleocr-vl-ref.gguf"
+        },
+        "thresholds": {
+          "*": 0.995
+        }
+      }
+    },
+    {
+      "name": "deepseek-ocr2",
+      "engine": "deepseek-ocr2",
+      "gguf": {
+        "repo": "cstr/deepseek-ocr2-crispembed-GGUF",
+        "file": "deepseek-ocr2-q4_k.gguf",
+        "revision": "a465ab6cf4b5",
+        "approx_size_mb": 2225
+      },
+      "sample": "tests/regression/images/fox.png",
+      "expected_text": "The quick brown fox jumps over the lazy dog. 12345",
+      "expected_text_source": "captured 2026-07-02 on M4 Metal at q4_k after reverting the Jun-20 perf-sweep regression (restored deepseek_ocr2.cpp to c58913c). Revision pinned to a465ab6cf4b5 \u2014 the character-perfect Jun-19 q4_k (the newer 04:00 HF q4_k has lm_head\u2192Q8_0 but was not re-verified against the fixed engine). Guards the perf-sweep regression class: any flash_attn_ext / graph-restructure that garbles the Qwen2 vision encoder makes this crater. Also guards the loader BACKWARD-COMPAT path (per-expert l.blk.*.exp.*.ffn_* tensors) after the converter-#4 stacked-experts change.",
+      "match": {
+        "max_cer": 0.12
+      }
+    },
+    {
+      "name": "deepseek-ocr2-stacked",
+      "engine": "deepseek-ocr2",
+      "gguf": {
+        "repo": "cstr/deepseek-ocr2-crispembed-GGUF",
+        "file": "deepseek-ocr2-q4_k-stacked.gguf",
+        "revision": "ec0fda03901c",
+        "approx_size_mb": 2308
+      },
+      "sample": "tests/regression/images/fox.png",
+      "expected_text": "The quick brown fox jumps over the lazy dog. 12345",
+      "expected_text_source": "Converter #4 emits the 64 routed experts as STACKED 3D tensors (l.blk.{i}.ffn_{gate,up,down}_exps.weight, ggml ne=[in,out,n_exp]) so the loader skips the runtime per-expert\u2192stacked copy (peak footprint 5.27\u21923.97 GB, \u22121.3 GB, on M1 q4_k). Guards the PRESTACKED loader path (deepseek_ocr2: 'using prestacked MoE experts'). Byte-identical expert data to the per-expert GGUF (validated on Kaggle vs source); decoded output identical to the a465ab6cf4b5 baseline (verified 2026-07-13 M1 Metal, cer 0.0). Same fox fixture; the lm_head\u2192Q8_0 quantizer floor is now re-verified against the fixed engine here.",
+      "match": {
+        "max_cer": 0.12
+      }
+    },
+    {
+      "name": "unlimited-ocr-stacked",
+      "engine": "unlimited-ocr",
+      "gguf": {
+        "repo": "cstr/unlimited-ocr-crispembed-GGUF",
+        "file": "unlimited-ocr-q4_k-stacked.gguf",
+        "revision": "b11fef884fee",
+        "approx_size_mb": 2252
+      },
+      "sample": "tests/regression/images/fox.png",
+      "expected_text": "title [33, 196, 636, 360]The quick brown fox jumps\ntitle [34, 548, 588, 740]over the lazy dog. 12345",
+      "expected_text_source": "captured 2026-07-14 on M1 Metal at q4_k. Unlimited-OCR (baidu, DeepSeek-V2 MoE) full-page grounding output (title blocks + coords). Guards the PRESTACKED loader path (unlimited_ocr: 'using prestacked MoE experts') added with the stacked-experts converter change: the 64 routed experts ship as l.blk.{i}.ffn_{gate,up,down}_exps.weight 3D tensors (byte-identical to per-expert; validated vs source on Kaggle), so the runtime skips the per-expert->stacked copy (peak footprint 4.32->3.11 GB, -1.2 GB). Decoded output byte-identical to the per-expert GGUF on all 3 loader paths. First regression coverage for this engine; also guards the vision-graph garble class (any encoder scramble craters the CER). max_cer buffers minor cross-backend coord drift.",
+      "match": {
+        "max_cer": 0.15
+      }
+    },
+    {
+      "name": "restormer",
+      "engine": "restormer",
+      "diff_only": true,
+      "_comment": "Restoration/denoise engine: no --ocr path, so the only regression signal is the diff harness (golden 64x64 output vs a PyTorch reference reconstructed from the GGUF via tools/dump_restormer_reference_from_gguf.py). Catches the 2026-07 conv-weight-layout + MDTA scramble class that a std>1 non-degenerate guard passes.",
+      "gguf": {
+        "repo": "cstr/text-super-resolution-gguf",
+        "file": "restormer-denoise-f16.gguf",
+        "revision": "main",
+        "approx_size_mb": 50
+      },
+      "diff": {
+        "binary": "test-restormer-diff",
+        "ref": {
+          "repo": "cstr/text-super-resolution-gguf",
+          "file": "restormer-ref.gguf"
+        },
+        "thresholds": {
+          "output": 0.99
+        }
+      }
+    },
+    {
+      "name": "swinir",
+      "engine": "swinir",
+      "diff_only": true,
+      "_comment": "SR/restoration engine (no --ocr): diff harness is the only regression signal. Guards the 2026-06 scalar->ggml conv wave. Model+ref pinned to audit-verified (2026-07).",
+      "gguf": {
+        "repo": "cstr/text-super-resolution-gguf",
+        "file": "swinir-light-x4-f16.gguf",
+        "revision": "main"
+      },
+      "diff": {
+        "binary": "test-swinir-diff",
+        "ref": {
+          "repo": "cstr/text-super-resolution-gguf",
+          "file": "swinir-ref.gguf"
+        },
+        "thresholds": {
+          "output": 0.99
+        }
+      }
+    },
+    {
+      "name": "dat",
+      "engine": "dat",
+      "diff_only": true,
+      "_comment": "SR/restoration engine (no --ocr): diff harness is the only regression signal. Guards the 2026-06 scalar->ggml conv wave. Model+ref pinned to audit-verified (2026-07).",
+      "gguf": {
+        "repo": "cstr/text-super-resolution-gguf",
+        "file": "dat-light-x2-f32.gguf",
+        "revision": "main"
+      },
+      "diff": {
+        "binary": "test-dat-diff",
+        "ref": {
+          "repo": "cstr/text-super-resolution-gguf",
+          "file": "dat-ref.gguf"
+        },
+        "thresholds": {
+          "output": 0.99
+        }
+      }
+    },
+    {
+      "name": "hat",
+      "engine": "hat",
+      "diff_only": true,
+      "_comment": "SR/restoration engine (no --ocr): diff harness is the only regression signal. Guards the 2026-06 scalar->ggml conv wave. Model+ref pinned to audit-verified (2026-07).",
+      "gguf": {
+        "repo": "cstr/text-super-resolution-gguf",
+        "file": "hat-sr-x4-f16.gguf",
+        "revision": "main"
+      },
+      "diff": {
+        "binary": "test-hat-diff",
+        "ref": {
+          "repo": "cstr/text-super-resolution-gguf",
+          "file": "hat-ref.gguf"
+        },
+        "thresholds": {
+          "output": 0.99
+        }
+      }
+    },
+    {
+      "name": "pan",
+      "engine": "pan",
+      "diff_only": true,
+      "_comment": "SR/restoration engine (no --ocr): diff harness is the only regression signal. Guards the 2026-06 scalar->ggml conv wave. Model+ref pinned to audit-verified (2026-07).",
+      "gguf": {
+        "repo": "cstr/text-super-resolution-gguf",
+        "file": "pan-x4-f16.gguf",
+        "revision": "main"
+      },
+      "diff": {
+        "binary": "test-pan-diff",
+        "ref": {
+          "repo": "cstr/text-super-resolution-gguf",
+          "file": "pan-ref.gguf"
+        },
+        "thresholds": {
+          "output": 0.99
+        }
+      }
+    },
+    {
+      "name": "tbsrn",
+      "engine": "tbsrn",
+      "diff_only": true,
+      "_comment": "SR/restoration engine (no --ocr): diff harness is the only regression signal. Guards the 2026-06 scalar->ggml conv wave. Model+ref pinned to audit-verified (2026-07).",
+      "gguf": {
+        "repo": "cstr/text-super-resolution-gguf",
+        "file": "tbsrn-telescope-f16.gguf",
+        "revision": "main"
+      },
+      "diff": {
+        "binary": "test-tbsrn-diff",
+        "ref": {
+          "repo": "cstr/text-super-resolution-gguf",
+          "file": "tbsrn-ref.gguf"
+        },
+        "thresholds": {
+          "output": 0.99
+        }
+      }
+    },
+    {
+      "name": "adair",
+      "engine": "adair",
+      "diff_only": true,
+      "_comment": "SR/restoration engine (no --ocr): diff harness is the only regression signal. Guards the 2026-06 scalar->ggml conv wave. Model+ref pinned to audit-verified (2026-07).",
+      "gguf": {
+        "repo": "cstr/AdaIR-GGUF",
+        "file": "adair-5d-f32.gguf",
+        "revision": "main"
+      },
+      "diff": {
+        "binary": "test-adair-diff",
+        "ref": {
+          "repo": "cstr/text-super-resolution-gguf",
+          "file": "adair-ref.gguf"
+        },
+        "thresholds": {
+          "output": 0.99
+        }
+      }
+    },
+    {
+      "name": "scunet",
+      "engine": "scunet",
+      "diff_only": true,
+      "_comment": "SR/restoration engine (no --ocr): diff harness is the only regression signal. Guards the 2026-06 scalar->ggml conv wave. Model+ref pinned to audit-verified (2026-07).",
+      "gguf": {
+        "repo": "cstr/scunet-GGUF",
+        "file": "scunet-color-f32.gguf",
+        "revision": "main"
+      },
+      "diff": {
+        "binary": "test-scunet-diff",
+        "ref": {
+          "repo": "cstr/scunet-GGUF",
+          "file": "scunet-ref.gguf"
+        },
+        "thresholds": {
+          "output": 0.99
+        }
+      }
+    },
+    {
+      "name": "instructir",
+      "engine": "instructir",
+      "diff_only": true,
+      "_comment": "SR/restoration engine (no --ocr): diff harness is the only regression signal. Guards the 2026-06 scalar->ggml conv wave. Model+ref pinned to audit-verified (2026-07).",
+      "gguf": {
+        "repo": "cstr/InstructIR-GGUF",
+        "file": "instructir-f32.gguf",
+        "revision": "main"
+      },
+      "diff": {
+        "binary": "test-instructir-diff",
+        "ref": {
+          "repo": "cstr/InstructIR-GGUF",
+          "file": "instructir-ref.gguf"
+        },
+        "thresholds": {
+          "output": 0.99
+        }
+      }
+    },
+    {
+      "name": "esrgan",
+      "engine": "esrgan",
+      "diff_only": true,
+      "_comment": "SR engine (no --ocr): diff harness is the only regression signal. Ref generated on Kaggle CUDA (verify-gated) 2026-07.",
+      "gguf": {
+        "repo": "cstr/esrgan-sr-GGUF",
+        "file": "esrgan-x4-f32.gguf",
+        "revision": "main"
+      },
+      "diff": {
+        "binary": "test-esrgan-diff",
+        "ref": {
+          "repo": "cstr/esrgan-sr-GGUF",
+          "file": "esrgan-ref.gguf"
+        },
+        "thresholds": {
+          "output": 0.95
+        },
+        "_note": "output floor 0.95: uint8-clamped 4x SR output vs float ref + backend variance gives ~0.987 on Metal/CPU (passed harness's own gate on Kaggle CUDA); a scramble regression craters to ~0."
+      }
+    },
+    {
+      "name": "safmn",
+      "engine": "safmn",
+      "diff_only": true,
+      "_comment": "SR engine (no --ocr): diff harness is the only regression signal. Ref generated on Kaggle CUDA (verify-gated) 2026-07.",
+      "gguf": {
+        "repo": "cstr/safmn-sr-GGUF",
+        "file": "safmn-x4-f32.gguf",
+        "revision": "main"
+      },
+      "diff": {
+        "binary": "test-safmn-diff",
+        "ref": {
+          "repo": "cstr/safmn-sr-GGUF",
+          "file": "safmn-ref.gguf"
+        },
+        "thresholds": {
+          "output": 0.95
+        },
+        "_note": "output floor 0.95: uint8-clamped 4x SR output vs float ref + backend variance gives ~0.987 on Metal/CPU (passed harness's own gate on Kaggle CUDA); a scramble regression craters to ~0."
+      }
+    },
+    {
+      "name": "nafnet",
+      "engine": "nafnet",
+      "diff_only": true,
+      "_comment": "NAFNet-SIDD denoise engine (no --ocr): diff harness is the only regression signal. Guards the 2026-06 scalar->ggml conv wave \u2014 the conv2d_ggml port had scrambled every kernel (declared ne=[OC,IC,KH,KW] but PyTorch-row-major bytes) so output cratered to cos 0.538; fixed by building [KW,KH,IC,OC] kernels from the dequant bytes unchanged (like swinir) + backend-resident kernels so Metal/CUDA weights don't abort the CPU conv sched. Ref = tools/dump_nafnet_reference.py on NAFNet-SIDD-width32.pth; scalar and ggml paths both cos 0.999998 vs it on Metal+CPU.",
+      "gguf": {
+        "repo": "cstr/nafnet-sidd-GGUF",
+        "file": "nafnet-sidd-w32-f16.gguf",
+        "revision": "main",
+        "approx_size_mb": 56
+      },
+      "diff": {
+        "binary": "test-nafnet-diff",
+        "ref": {
+          "repo": "cstr/nafnet-sidd-GGUF",
+          "file": "nafnet-ref.gguf"
+        },
+        "thresholds": {
+          "output": 0.99
+        }
+      }
+    },
+    {
+      "name": "bttr",
+      "engine": "bttr",
+      "_comment": "Handwritten-math OCR (BTTR, DenseNet + Transformer decoder), CROHME-trained. Also the Metal/CUDA residency-abort crash guard (fixed 2026-07-02: weights on init_best but the conv sched is CPU) — MUST run on a GPU build to exercise residency. Fixture image = CROHME 2014 test row 23 (GT \\[C_{t}=C+C=2C\\]) fetched at test time from Kitajiang/test2_CROHME2014 at a pinned revision via sample_hf; CROHME is CC-BY-NC-SA so the image is NOT committed into this MIT/Apache repo. expected_text pinned 2026-07-13 to the deterministic q8_0 decode (CPU==Metal identical; all three CROHME engines read this row correctly). Upgrades the guard from crash+no-garbage-only (it had pointed at a PRINTED, out-of-domain image) to a real text-match on an in-domain handwritten sample. Attribution: CROHME competition (Mouchere et al.).",
+      "gguf": {
+        "repo": "cstr/bttr-handwritten-math-gguf",
+        "file": "bttr-hw-q4_k.gguf",
+        "revision": "main",
+        "approx_size_mb": 4
+      },
+      "sample_hf": {
+        "dataset": "Kitajiang/test2_CROHME2014",
+        "file": "CROHME2014/test-00000-of-00001.parquet",
+        "revision": "abd3f7dd1e3623315997afb04fd28b4d7adc0588",
+        "row": 23,
+        "image_column": "image",
+        "label_column": "latex_formula",
+        "expect_label": "\\[C_{t}=C+C=2C\\]"
+      },
+      "expected_text": "c _ { t } = c + c = 2 c",
+      "match": {
+        "max_cer": 0.15
+      }
+    },
+    {
+      "name": "hmer",
+      "engine": "hmer",
+      "_comment": "Handwritten-math OCR (HMER, DenseNet-121 + GRU attention), CROHME-trained. Same catastrophic-regression crash guard as bttr (Metal/CUDA residency-abort class, fixed 2026-07-02) — MUST run on a GPU build. Fixture image = CROHME 2014 test row 23 (GT \\[C_{t}=C+C=2C\\]) fetched at test time from Kitajiang/test2_CROHME2014 at a pinned revision via sample_hf; CROHME is CC-BY-NC-SA so the image is NOT committed into this MIT/Apache repo. expected_text pinned 2026-07-13 to the deterministic q8_0 decode (CPU==Metal identical). Previously pointed at a PRINTED, out-of-domain image with expected_text null (garbage-guard only); now a real text-match on an in-domain handwritten sample. Attribution: CROHME competition (Mouchere et al.).",
+      "gguf": {
+        "repo": "cstr/hmer-handwritten-math-gguf",
+        "file": "hmer-hw-q4_k.gguf",
+        "revision": "main",
+        "approx_size_mb": 4
+      },
+      "sample_hf": {
+        "dataset": "Kitajiang/test2_CROHME2014",
+        "file": "CROHME2014/test-00000-of-00001.parquet",
+        "revision": "abd3f7dd1e3623315997afb04fd28b4d7adc0588",
+        "row": 23,
+        "image_column": "image",
+        "label_column": "latex_formula",
+        "expect_label": "\\[C_{t}=C+C=2C\\]"
+      },
+      "expected_text": "c _ { t } = c + c = 2 c",
+      "match": {
+        "max_cer": 0.15
+      }
+    },
+    {
+      "name": "posformer",
+      "engine": "posformer",
+      "_comment": "Handwritten-math OCR (PosFormer, DenseNet + Transformer + ARM), CROHME-trained. Same catastrophic-regression crash guard (Metal/CUDA residency-abort class, fixed 2026-07-02) — MUST run on a GPU build. Fixture image = CROHME 2014 test row 23 (GT \\[C_{t}=C+C=2C\\]) fetched at test time from Kitajiang/test2_CROHME2014 at a pinned revision via sample_hf; CROHME is CC-BY-NC-SA so the image is NOT committed into this MIT/Apache repo. expected_text pinned 2026-07-13 to the deterministic q8_0 decode (CPU==Metal identical). Previously pointed at a PRINTED, out-of-domain image with expected_text null (garbage-guard only); now a real text-match on an in-domain handwritten sample. Attribution: CROHME competition (Mouchere et al.).",
+      "gguf": {
+        "repo": "cstr/posformer-crohme-GGUF",
+        "file": "posformer-crohme-q8_0.gguf",
+        "revision": "main",
+        "approx_size_mb": 15
+      },
+      "sample_hf": {
+        "dataset": "Kitajiang/test2_CROHME2014",
+        "file": "CROHME2014/test-00000-of-00001.parquet",
+        "revision": "abd3f7dd1e3623315997afb04fd28b4d7adc0588",
+        "row": 23,
+        "image_column": "image",
+        "label_column": "latex_formula",
+        "expect_label": "\\[C_{t}=C+C=2C\\]"
+      },
+      "expected_text": "c _ { t } = c + c = 2 c",
+      "match": {
+        "max_cer": 0.15
+      }
+    },
+    {
+      "name": "ppformulanet",
+      "engine": "ppformulanet",
+      "_comment": "Printed-formula OCR (PP-FormulaNet-L, SAM-ViT + MBart). Same catastrophic-regression guard (Metal/CUDA residency-abort class, fixed 2026-07-02). expected_text pinned 2026-07-13 to the deterministic q8_0 decode of formula_quadratic.png — CPU==Metal byte-identical, the correct quadratic formula in PP-FormulaNet's array/mathscr style. Upgrades this from crash+no-garbage-only to a text-match guard. NOTE: the MBart decoder + SAM-ViT encoder use tanh-approx GELU where the reference (config activation_function=gelu) is exact erf — a benign ~1e-3 deviation; the decode is correct and argmax-unaffected, so it was NOT switched to erf without a full PaddleOCR reference (dev-guide inverse-default rule). MUST run on a GPU build. (mixtex_ocr is intentionally NOT guarded here — separate pre-existing decode-degeneration bug.)",
+      "gguf": {
+        "repo": "cstr/ppformulanet-l-gguf",
+        "file": "ppformulanet-l-q8_0.gguf",
+        "revision": "main",
+        "approx_size_mb": 200
+      },
+      "sample": "tests/regression/images/formula_quadratic.png",
+      "expected_text": "\\begin{array} { r } { { \\pmb { \\mathscr { x } } } = \\frac { - b \\pm \\sqrt { b ^ { 2 } - 4 a c \\, } } { 2 a } } \\end{array}",
+      "match": {
+        "max_cer": 0.15
+      }
+    },
+    {
+      "name": "fireredpunc",
+      "engine": "fireredpunc",
+      "_comment": "FireRedPunc punctuation restoration (BERT chinese-bert-wwm-ext, 5 classes). No hidden/logits accessor in the punct C API, so the guardrail is a golden text match (run_check): a graph-scramble regression turns correct punctuation into garbage. Golden captured on the shipped q4_k (its cls head is F16 and computed in-graph via mul_mat, so weight quant is fine — unlike pcs, whose q4_k FC-head weights crash a raw tensor_get). Impl lives in CrispASR/crisp_punc (shared lib replaces the local src copy). Deterministic (argmax, no sampling).",
+      "gguf": {
+        "repo": "cstr/fireredpunc-GGUF",
+        "file": "fireredpunc-q4_k.gguf",
+        "revision": "main",
+        "approx_size_mb": 55
+      },
+      "run_check": {
+        "binary": "test-punct-diff",
+        "args": ["hello world how are you today i am fine thanks", "Hello world. How are you today? I am fine. Thanks."],
+        "expect_exit": 0
+      }
+    },
+    {
+      "name": "pcs",
+      "engine": "pcs",
+      "_comment": "PCS punctuation+capitalization+segmentation (XLM-RoBERTa-base + 4 heads). Golden text-match on q8_0, which reproduces the ONNX source model EXACTLY (verified via tools/dump_pcs_reference.py: tok+post+pre+seg predictions match 11/11, encoder hidden cos 0.999997). Root causes fixed to reach parity: (1) q4_k FC-head dequant crash; (2) Unigram Viterbi tokenizer (was greedy longest-match — mis-split multi-subword words, the dominant error; needs tokenizer.ggml.scores in the GGUF); (3) decode subtoken count from actual token_ids (▁ boundaries); (4) SBD softmax P>0.05 threshold (was argmax); (5) truecase shifted is-sentence-initial conditioning; (6) exact erf GELU + LayerNorm eps 1e-5. Pinned on q8_0 (not q4_k) because q4_k's tiny truecase head has a 1-char quant-floor flip ('World'); q8_0 is exact and backend-robust at cos 0.999997. Impl in CrispASR/crisp_punc (shared lib replaces the local src copy). Deterministic (argmax/threshold, no sampling).",
+      "gguf": {
+        "repo": "cstr/pcs-xlmr-base-GGUF",
+        "file": "pcs-xlmr-base-q8_0.gguf",
+        "revision": "main",
+        "approx_size_mb": 287
+      },
+      "run_check": {
+        "binary": "test-punct-diff",
+        "args": ["hello world how are you today i am fine thanks", "Hello world, how are you today? I am fine, thanks."],
+        "expect_exit": 0
+      }
+    },
+    {
+      "name": "fullstop-punc",
+      "engine": "fireredpunc",
+      "_comment": "Fullstop multilingual punctuation (oliverguhr/fullstop-punctuation-multilang-large, XLM-R-large) via the fireredpunc engine's SentencePiece path. Golden text-match on q4_k: this path had the full pcs bug set (greedy tokenizer, LN eps 1e-12, tanh GELU) — now Unigram Viterbi (needs tokenizer.ggml.scores), eps 1e-5, erf GELU. Engine reproduces the HF reference exactly on this sentence at q4_k/q8_0/f32 (verified vs AutoModelForTokenClassification); backend-robust (Metal==CPU). q8_0 matches HF on more borderline sentences (q4_k has occasional quant-floor punctuation flips). Requires re-converted GGUFs with scores.",
+      "gguf": {
+        "repo": "cstr/fullstop-punc-multilang-GGUF",
+        "file": "fullstop-punc-q4_k.gguf",
+        "revision": "main",
+        "approx_size_mb": 321
+      },
+      "run_check": {
+        "binary": "test-punct-diff",
+        "args": ["she asked why are you late the bus was delayed unexpectedly", "She asked: why are you late? The bus was delayed unexpectedly."],
+        "expect_exit": 0
+      }
+    },
+    {
+      "name": "decoder_embed",
+      "engine": "decoder_embed",
+      "diff_only": true,
+      "_comment": "Decoder-embedding engine (Qwen3/Gemma3-Embedding via crispembed_encode, no --ocr): final last-token-pooled embedding parity. Ref = tools/dump_decoder_embed_reference.py on Qwen/Qwen3-Embedding-0.6B (independent HF AutoModel, last-token pool + L2). Single-stage; cosine is scale-invariant. Engine (q8_0) vs f32 HF ref = cos 0.9993; floor 0.98. Guards the wave flash_attn_ext work (29d8a08); a graph scramble craters cos to ~0.",
+      "gguf": {
+        "repo": "cstr/qwen3-embed-0.6b-GGUF",
+        "file": "qwen3-embed-0.6b-q8_0.gguf",
+        "revision": "main",
+        "approx_size_mb": 610
+      },
+      "diff": {
+        "binary": "test-decoder-embed-diff",
+        "ref": {
+          "repo": "cstr/qwen3-embed-0.6b-GGUF",
+          "file": "qwen3-embed-ref.gguf"
+        },
+        "thresholds": {
+          "final_embedding": 0.98
+        }
+      }
+    },
+    {
+      "name": "bidirlm-text",
+      "engine": "decoder_embed",
+      "diff_only": true,
+      "_comment": "BidirLM-Omni text-embedding path (crispembed_encode on the full-omni GGUF; mean-pool, bidirectional). Ref = tools/dump_decoder_embed_reference.py --pooling mean on BidirLM/BidirLM-Omni-2.5B-Embedding. The ORIGINAL shipped GGUFs had a converter bug that cratered the text tower to cos 0.047 (0.997 vision unaffected); re-exported 2026-07-03 with the current convert-decoder-embed-to-gguf.py — text 0.9992 (q8_0) + vision still 0.997, so this one GGUF serves both bidirlm-text and bidirlm-vision. Floor 0.98.",
+      "gguf": {
+        "repo": "cstr/bidirlm-omni-2.5b-GGUF",
+        "file": "bidirlm-omni-2.5b-q8_0.gguf",
+        "revision": "main",
+        "approx_size_mb": 2555
+      },
+      "diff": {
+        "binary": "test-decoder-embed-diff",
+        "ref": {
+          "repo": "cstr/bidirlm-omni-2.5b-GGUF",
+          "file": "bidirlm-text-ref.gguf"
+        },
+        "thresholds": {
+          "final_embedding": 0.98
+        }
+      }
+    },
+    {
+      "name": "face_detect",
+      "engine": "cnn_embed",
+      "diff_only": true,
+      "_comment": "SCRFD face detection (cnn_embed, no --ocr): parity vs an independent insightface-SCRFD reference (tools/dump_face_reference.py over det_10g.onnx). Guards the count + bbox/landmark pixel error; the harness emits a synthetic detection cos_min (1.0 pass / 0.0 fail) at a 12px tolerance (letterbox/resize differs slightly from insightface; engine matches within 2.45px). A graph-scramble regression yields wrong/zero detections. Fixture face.png is a FLUX-generated synthetic face (tests/regression/images/face.png), passed via diff.args.",
+      "gguf": {
+        "repo": "cstr/scrfd-det-10g-GGUF",
+        "file": "scrfd-det-10g.gguf",
+        "revision": "main",
+        "approx_size_mb": 16
+      },
+      "diff": {
+        "binary": "test-face-diff",
+        "args": ["tests/regression/images/face.png"],
+        "ref": {
+          "repo": "cstr/scrfd-det-10g-GGUF",
+          "file": "face-ref.gguf"
+        },
+        "thresholds": {
+          "detection": 0.5
+        }
+      }
+    },
+    {
+      "name": "vit_embed",
+      "engine": "vit_embed",
+      "diff_only": true,
+      "_comment": "SigLIP/CLIP ViT vision encoder (no --ocr): final image-embedding parity is the regression signal. Ref = tools/dump_vit_reference.py on google/siglip-base-patch16-384 (independent HF AutoModel, get_image_features). Single-stage (C API exposes only the final embedding); cosine is scale-invariant so an L2-norm mismatch is harmless, a graph scramble craters cos to ~0. Engine vs f32 HF ref = cos 0.9915 on CPU (f16 GGUF + slow-vs-engine image preprocessing); floor 0.98 absorbs backend FP variance.",
+      "gguf": {
+        "repo": "cstr/siglip-base-GGUF",
+        "file": "siglip-base.gguf",
+        "revision": "main",
+        "approx_size_mb": 355
+      },
+      "diff": {
+        "binary": "test-vit-embed-diff",
+        "args": ["tests/regression/images/fox.png"],
+        "ref": {
+          "repo": "cstr/siglip-base-GGUF",
+          "file": "vit-ref.gguf"
+        },
+        "thresholds": {
+          "final_embedding": 0.98
+        }
+      }
+    },
+    {
+      "name": "tps_locnet",
+      "engine": "tps_locnet",
+      "diff_only": true,
+      "_comment": "TPS document-dewarp localization CNN (no --ocr): parity harness is the only regression signal. Guards the 2026-06 scalar->ggml conv wave. Ref = tools/dump_tps_reference_from_gguf.py (independent pure-numpy forward over the shipped BN-folded GGUF weights; the PaddleOCR source .pdparams is geo-blocked on bcebos, so from_gguf like the SR engines — catches graph-scramble regressions, not conversion bugs). C++ engine matches numpy cos 1.000000 (points_pixel + fc2_out) on CPU.",
+      "gguf": {
+        "repo": "cstr/tps-loc-GGUF",
+        "file": "tps-loc-f32.gguf",
+        "revision": "main",
+        "approx_size_mb": 1
+      },
+      "diff": {
+        "binary": "test-tps-parity",
+        "ref": {
+          "repo": "cstr/tps-loc-GGUF",
+          "file": "tps-ref.gguf"
+        },
+        "thresholds": {
+          "*": 0.999
+        }
+      }
+    },
+    {
+      "name": "lilt",
+      "engine": "lilt",
+      "diff_only": true,
+      "_comment": "LiLT KIE encoder guardrail (no --ocr). Ref = dump_lilt_reference.py all 12 layers; 24/24 encoder stages cos 1.0 locally. NOTE: label predictions are meaningless (base checkpoint ships an untrained classifier head) \u2014 the encoder stages are the signal.",
+      "gguf": {
+        "repo": "cstr/lilt-base-GGUF",
+        "file": "lilt-base-f32.gguf",
+        "revision": "main"
+      },
+      "diff": {
+        "binary": "test-lilt-diff",
+        "ref": {
+          "repo": "cstr/lilt-base-GGUF",
+          "file": "lilt-ref.gguf"
+        },
+        "thresholds": {
+          "*": 0.99
+        }
+      }
+    },
+    {
+      "name": "lfm2",
+      "engine": "lfm2",
+      "diff_only": true,
+      "_comment": "LFM2.5-Embedding encoder guardrail (no --ocr). Ref = dump_lfm2_reference.py; 20/20 stages cos>=0.9997 locally. Pre-wave engine, not a regression.",
+      "gguf": {
+        "repo": "cstr/lfm2-embed-GGUF",
+        "file": "lfm2-embed-q8_0.gguf",
+        "revision": "main"
+      },
+      "diff": {
+        "binary": "test-lfm2-diff",
+        "ref": {
+          "repo": "cstr/lfm2-embed-GGUF",
+          "file": "lfm2-ref.gguf"
+        },
+        "thresholds": {
+          "*": 0.99
+        }
+      }
+    },
+    {
+      "name": "layout-heron",
+      "engine": "layout-detect",
+      "diff_only": true,
+      "_comment": "RT-DETRv2 (docling-project/docling-layout-heron) layout detector guardrail (no --ocr). Ref = tools/dump_layout_reference.py; input/backbone/encoder stages (ip3..enc_output) cos 1.0 on Metal AND CPU. Guards the encoder-scramble class: the dc0861b flash_attn swap kept the old manual permute(0,2,1,3) after ggml_flash_attn_ext (which already permutes internally), scrambling s3..enc_output to negative cos. dec_0_cross_out is compared PERMUTATION-TOLERANTLY (test_layout_diff.cpp perm_tolerant_cos): the 300 decoder queries are picked by a partial_sort over ~8400 near-tie encoder proposals, so a tiny backend FP delta in enc_output (Metal/CUDA vs the CPU/Python reference) reorders near-tie ranks and index-aligned cos craters (mean ~0.79, min negative on Metal) even though the cross_out VALUES are correct and the final boxes (score-sorted + NMS) are unaffected. Best-cosine matching each reference query recovers true parity (cos_mean ~0.999, min ~0.95 = the one deformable-sampling boundary query); a real decoder scramble collapses all matches toward 0 and trips the 0.85 gate.",
+      "gguf": {
+        "repo": "cstr/layout-heron-gguf",
+        "file": "layout-heron-f32.gguf",
+        "revision": "main"
+      },
+      "diff": {
+        "binary": "test-layout-diff",
+        "ref": {
+          "repo": "cstr/layout-heron-gguf",
+          "file": "layout-ref.gguf"
+        },
+        "thresholds": {
+          "*": 0.99,
+          "dec_0_cross_out": 0.85
+        }
+      }
+    },
+    {
+      "name": "gliner",
+      "engine": "gliner",
+      "_comment": "GLiNER (LFM2 backbone) guarded by an INDEPENDENT entity-output check (its per-stage dumper ref is broken: Lfm2BiModel replacement yields a dead 0-entity model). test-gliner-diff asserts Barack Obama->person + Hawaii->location on the default text.",
+      "gguf": {
+        "repo": "cstr/sauerkraut-gliner-lfm-GGUF",
+        "file": "gliner-lfm-q8_0.gguf",
+        "revision": "main"
+      },
+      "run_check": {
+        "binary": "test-gliner-diff",
+        "expect_exit": 0
+      }
+    },
+    {
+      "name": "lfm2_colbert",
+      "engine": "lfm2_colbert",
+      "diff_only": true,
+      "_comment": "LFM2.5-ColBERT multi-vector guardrail. Ref via AutoModel backbone + 1_Dense head (the old manual-forward dumper was wrong: hidden cos -0.54). q8_0 model vs f32 ref -> colbert_output ~0.998, floor 0.99.",
+      "gguf": {
+        "repo": "cstr/lfm2-colbert-GGUF",
+        "file": "lfm2-colbert-q8_0.gguf",
+        "revision": "main"
+      },
+      "diff": {
+        "binary": "test-lfm2-colbert-diff",
+        "ref": {
+          "repo": "cstr/lfm2-colbert-GGUF",
+          "file": "lfm2-colbert-ref.gguf"
+        },
+        "thresholds": {
+          "colbert_output": 0.99
+        }
+      }
+    },
+    {
+      "name": "bert_ner",
+      "engine": "bert_ner",
+      "diff_only": true,
+      "_comment": "BERT-NER encoder guardrail. Ref = dump_bert_ner_reference.py (AutoModel from .bin \u2014 safetensors SIGBUSes on M1) on the harness's fixed text. q8_0 model vs f32 ref -> final_hidden ~0.995, floor 0.99.",
+      "gguf": {
+        "repo": "cstr/bert-base-NER-GGUF",
+        "file": "bert-base-ner-q8_0.gguf",
+        "revision": "main"
+      },
+      "diff": {
+        "binary": "test-bert-ner-diff",
+        "ref": {
+          "repo": "cstr/bert-base-NER-GGUF",
+          "file": "bert-ner-ref.gguf"
+        },
+        "thresholds": {
+          "final_hidden": 0.99
+        }
+      }
+    },
+    {
+      "name": "modernbert",
+      "engine": "modernbert",
+      "diff_only": true,
+      "_comment": "ModernBERT (gte-modernbert-base) encoder guardrail. Ref = dump_modernbert_reference.py (AutoModel) on a ~113-token text; span >64 so the local sliding-window layers (radius local_attention/2=64) restrict attention, guarding the SWA mask (swa_mask). q8_0 model vs f32 ref -> final_hidden 0.9919 on CPU; floor 0.99. Disabling SWA (CRISPEMBED_ENCODER_NO_SWA=1) craters cos to ~-0.87, so this catches an SWA regression.",
+      "gguf": {
+        "repo": "cstr/gte-modernbert-base-GGUF",
+        "file": "gte-modernbert-base-q8_0.gguf",
+        "revision": "main"
+      },
+      "diff": {
+        "binary": "test-modernbert-diff",
+        "ref": {
+          "repo": "cstr/gte-modernbert-base-GGUF",
+          "file": "modernbert-ref.gguf"
+        },
+        "thresholds": {
+          "final_hidden": 0.99
+        }
+      }
+    },
+    {
+      "name": "mixtex",
+      "engine": "mixtex",
+      "gguf": {
+        "repo": "cstr/mixtex-zhen-gguf",
+        "file": "mixtex-zhen-f16.gguf",
+        "revision": "main",
+        "approx_size_mb": 165
+      },
+      "sample": "tests/regression/images/mixtex_pow.png",
+      "expected_text": "\\[\\displaystyle\\mathcal{X}^{2}\\ \\mathrm{+~}\\mathcal{Y}^{2}\\ =\\ \\underline{{2}}\\]",
+      "expected_text_source": "captured 2026-07-02 (f16, Metal) with the HF-parity bicubic preprocessing default, after the byte-level detok fix (core_bpe::unicode_to_bytes) and the vocab_size 25678->25681 EOS fix. Guards: a detok regression leaks Ġ/Ċ; a vocab_size regression makes decode never emit EOS (runs to max_len); a preprocessing regression (e.g. reverting to bilinear via MIXTEX_BILINEAR) flips the reading.",
+      "match": {
+        "max_cer": 0.12
+      }
+    },
+    {
+      "name": "bidirlm-vision",
+      "engine": "bidirlm-vision",
+      "diff_only": true,
+      "_comment": "BidirLM-Omni vision tower (Qwen2VL ViT + DeepStack). Ref = tools/dump_bidirlm_vision_reference.py on BidirLM/BidirLM-Omni-2.5B-Embedding (HF BidirLMOmniVisionModel, visual.* weights only, lazy safe_open). The C API (crispembed_encode_image_raw) exposes image_embeds + deepstack slabs; the harness feeds the ref's stored pixel_values/grid so preprocessing is identical. Gated on per-token MEAN cosine (test_bidirlm_vision.py's validated metric; cos_min is tanked by a few massive-activation deepstack rows that quantize poorly, not a bug). q8_0 target: image_embeds 0.997, deepstack 0.9998/0.9938; q4_k sits at its ~0.97 quant floor. A graph-scramble regression craters the mean to ~0.",
+      "gguf": {
+        "repo": "cstr/bidirlm-omni-2.5b-GGUF",
+        "file": "bidirlm-omni-2.5b-q8_0.gguf",
+        "revision": "main",
+        "approx_size_mb": 2619
+      },
+      "diff": {
+        "binary": "test-bidirlm-vision-diff",
+        "args": [],
+        "ref": {
+          "repo": "cstr/bidirlm-omni-2.5b-GGUF",
+          "file": "bidirlm-vision-ref.gguf"
+        },
+        "thresholds": {
+          "*": 0.99
+        }
+      }
+    },
+    {
+      "name": "clip-text",
+      "engine": "clip-text",
+      "diff_only": true,
+      "_comment": "CLIP text encoder (openai/clip-vit-base-patch16). No OCR/text output — the only regression signal is the final pooled+projected text embedding (crispembed_clip_text_encode) vs an independent HF CLIPTextModel.get_text_features reference (tools/dump_clip_text_reference.py, text 'a photo of a fox'). Guards the CLIP-BPE </w> word-boundary tokenizer (fa66a02): a GPT-2-style byte-level regression that emits a standalone space token instead of appending </w> per word craters final_embedding cos from 1.000 to ~0.79. cosine is scale-invariant so an engine/ref L2-norm mismatch is harmless; the diagnostic pre_proj line (EOS hidden, no text_proj) is printed but NOT gated (it is ~0 by design, confirming text_proj IS applied).",
+      "gguf": {
+        "repo": "cstr/clip-text-base-GGUF",
+        "file": "clip-text-base.gguf",
+        "revision": "4e544b4ae5ce3ba19dd2c9aed4f6dee14a4a7cb2",
+        "approx_size_mb": 244
+      },
+      "diff": {
+        "binary": "test-clip-text-diff",
+        "ref": {
+          "repo": "cstr/clip-text-base-GGUF",
+          "file": "clip-text-ref.gguf",
+          "revision": "main"
+        },
+        "thresholds": {
+          "final_embedding": 0.99
+        }
+      }
+    },
+    {
+      "name": "tromr",
+      "engine": "tromr",
+      "_comment": "Polyphonic-TrOMR OMR (ResNetV2+ViT encoder + x-transformers decoder, 4 parallel heads). Deterministic greedy argmax over rhythm/pitch/lift streams, merged to symbolic notation. expected_text is the byte-exact decode on examples/photo1.jpg (Apache-2.0), captured 2026-07-13: CPU==Metal identical, tromr-q8_0 (F16 backbone) == f32. Guards the whole OMR path (SAME-pad conv, ViT 32^-0.5 scale, scaled pos-emb, SIGLU/GEGLU, greedy argmax, detok+merge) — any regression craters the notation. The no-garbage guard passes with margin (the frequent 'note' word is 39/85 < the 0.5 repetition floor).",
+      "gguf": {
+        "repo": "cstr/tromr-GGUF",
+        "file": "tromr-q8_0.gguf",
+        "revision": "main",
+        "approx_size_mb": 31
+      },
+      "sample": "tests/regression/images/staff_tromr.jpg",
+      "expected_text": "clef-F4+keySignature-CM+note-E3_eighth.|note-C4_eighth.+note-E3_sixteenth|note-D4_sixteenth+note-E3_eighth.|note-E4_eighth.+note-E3_sixteenth|note-F4_sixteenth+note-E3_eighth.|note-C4_eighth.+note-E3_sixteenth|note-B3_sixteenth+note-E3_eighth.|note-D4_eighth.+note-E3_sixteenth|note-C4_sixteenth+barline+note-D3_eighth.|note-F3_eighth.|note-C4_whole+note-D3_sixteenth|note-F3_sixteenth+note-D3_eighth.|note-F3_eighth.+note-D3_sixteenth|note-F3_sixteenth+note-D3_half|note-F3_half+barline+note-D3_eighth.|note-B3_eighth.+note-E3_sixteenth|note-B3_sixteenth+note-F3_eighth.|note-B3_eighth.+note-G3_sixteenth|note-B3_sixteenth+note-B3_quarter|note-D4_quarter+note-G3_quarter|note-B3_quarter+barline",
+      "match": {
+        "max_cer": 0.1
+      }
+    },
+    {
+      "name": "flova",
+      "engine": "flova",
+      "_comment": "Flova/omr_transformer OMR (DonutSwin encoder + 4-layer mBART VED → LilyPond). Handwritten/whiteboard monophonic music. Deterministic greedy argmax over the 75-token vocab, detok to LilyPond. expected_text is the byte-exact decode on the model card's sample1.png (Apache-2.0, from Flova/omr_transformer), captured 2026-07-13 with flova-q8_0.gguf: CPU==Metal identical, q8_0 == f32 == the model-card transcription. Guards the whole VED OMR path (DonutSwin windowed attn + shifted-window mask, patch-merge downsample, final encoder LN, mBART pre-norm cross-attn, offset-2 learned positions, eos=54 stop, detok). The no-garbage guard passes with margin (top word '8' repeats 8/23 < the 0.5 repetition floor).",
+      "gguf": {
+        "repo": "cstr/flova-omr-GGUF",
+        "file": "flova-q8_0.gguf",
+        "revision": "main",
+        "approx_size_mb": 162
+      },
+      "sample": "tests/regression/images/staff_flova.png",
+      "expected_text": "c'2 a''8 c''8 r4 c'1 e'8 c'8 c'8 a''8 f'4 a'8 c'8",
+      "match": {
+        "max_cer": 0.15
+      }
+    },
+    {
+      "name": "transcoda",
+      "engine": "transcoda",
+      "_comment": "Transcoda-59M zero-shot OMR (ConvNeXt-V2-Tiny encoder + 2-layer projector + 2D-sinusoidal-PE bridge + 8-layer pre-LN RoPE cross-attn decoder -> Humdrum **kern). Full-page score image, greedy argmax over the 3000-token BPE vocab with repetition_penalty=1.1. Clean-room engine (paper + config + oracle; the AGPL reference code is never read). expected_text is the byte-exact q8_0 decode on a Verovio-synth page (btrkeks/verovio-synth-omr, CC-BY-4.0), captured 2026-07-13: f32 per-stage cos=1.000000 (CPU==Metal), argmax 191/191 vs the HF reference, and both f32 and q8_0 greedy decodes are BYTE-IDENTICAL to the HF reference (460 chars / 203 tokens). Guards the whole path (ConvNeXt-V2 GRN blocks, projector, dual-memory cross-attn K=PE/V=raw, torchtune-NORMAL RoPE self-attn, pre-LN, untied LM head, per-unique-token repetition penalty, direct-concat detok). The no-garbage guard passes with margin (top token '=' repeats ~30/203 < the 0.5 repetition floor).",
+      "gguf": {
+        "repo": "cstr/transcoda-omr-GGUF",
+        "file": "transcoda-q8_0.gguf",
+        "revision": "main",
+        "approx_size_mb": 65
+      },
+      "sample": "tests/regression/images/page_transcoda.png",
+      "expected_text": "*clefG2 *k[f#] *M2/4 8d = 16gLL 16a 16b 16ccJJ 8ddL 8bJ = 8ccL 8ee 8dd 8gJ = 8.aL 16bJk 16ddLL 16cc 16b 16aJJ = 8gL 8f# 8g 8dJ = 16gLL 16a 16b 16ccJJ 8ddL 8bJ = 8ccL 8ee 8dd 8gJ = 8aL 8bJ 16ddLL 16cc 16b 16aJJ = 8gL 8f#J 8g =:|!|: 8dd = 8ggL 8ggJ 16ggLL 16aa 16bb 16ggJJ = 8eeL 8eeJ 4ee = 8aaL 8aaJ 16aaLL 16bb 16aa 16ggJJ = 8ff#L 8ddJ 8ddL 16eeL 16ff#JJ = 8ggL 8ee 8ee 8aaJ = 8ff#L 8dd 8dd 8ggJ = 16eeLL 16dd 16cc 16bJJ 16aLL 16b 16cc 16ddJJ = 8bL 8gJ 8g =:|!",
+      "match": {
+        "max_cer": 0.10
+      }
+    },
+    {
+      "name": "smoldocling",
+      "engine": "smoldocling",
+      "_comment": "Full-page DocTags OCR. Included in the engine inventory even when its GGUF is not in the local cache.",
+      "gguf": {
+        "repo": "cstr/smoldocling-GGUF",
+        "file": "smoldocling-q8_0.gguf",
+        "revision": "main",
+        "approx_size_mb": 261
+      },
+      "sample": "tests/regression/images/fox.png",
+      "expected_text": "The quick brown fox jumps over the lazy dog. 12345",
+      "match": {
+        "max_cer": 0.20
+      }
+    },
+    {
+      "name": "texo-distill",
+      "engine": "texo-distill",
+      "_comment": "Printed math small model; uses the PP-FormulaNet/Texo-compatible GGML path.",
+      "gguf": {"repo": "cstr/texo-distill-GGUF", "file": "texo-distill-q4_k.gguf", "revision": "main"},
+      "sample": "tests/regression/images/formula_quadratic.png",
+      "expected_text": "x = \\frac { - b \\pm \\sqrt { b ^ { 2 } - 4 a c } } { 2 a }",
+      "match": {"max_cer": 0.20}
+    },
+    {
+      "name": "bttr-live",
+      "engine": "bttr",
+      "gguf": {"repo": "cstr/bttr-handwritten-math-gguf", "file": "bttr-hw-q4_k.gguf", "revision": "main"},
+      "sample": "tests/regression/images/formula_quadratic.png",
+      "expected_text": "x = \\frac { - b \\pm \\sqrt { b ^ { 2 } - 4 a c } } { 2 a }",
+      "match": {"max_cer": 0.20}
+    },
+    {
+      "name": "hmer-live",
+      "engine": "hmer",
+      "gguf": {"repo": "cstr/hmer-handwritten-math-gguf", "file": "hmer-hw-q4_k.gguf", "revision": "main"},
+      "sample": "tests/regression/images/formula_quadratic.png",
+      "expected_text": null,
+      "match": {"max_cer": 0.20}
+    },
+    {
+      "name": "posformer-live",
+      "engine": "posformer",
+      "gguf": {"repo": "cstr/posformer-hw-GGUF", "file": "posformer-hw-q4_k.gguf", "revision": "main"},
+      "sample": "tests/regression/images/formula_quadratic.png",
+      "expected_text": null,
+      "match": {"max_cer": 0.20}
+    },
+    {
+      "name": "ppformulanet-l-q4-live",
+      "engine": "ppformulanet-l",
+      "gguf": {"repo": "cstr/ppformulanet-l-GGUF", "file": "ppformulanet-l-q4_k.gguf", "revision": "main"},
+      "sample": "tests/regression/images/formula_quadratic.png",
+      "expected_text": null,
+      "match": {"max_cer": 0.20}
+    },
+    {
+      "name": "smt",
+      "engine": "smt",
+      "_comment": "Sheet Music Transformer OMR (ConvNeXt encoder + cross-attn Transformer decoder -> bekern staff notation). Deterministic greedy argmax over the 20578-token bekern vocab. expected_text is the byte-exact q8_0 decode on a GrandStaff test image (antoniorv6/grandstaff, MIT), captured 2026-07-13: CPU==Metal identical, q8_0 == f32 (96.3% vs the dataset GT). Guards the whole VED OMR path (ConvNeXt patch-embed + stages, 2-D sinusoidal PE on cross-attn KEYS only, UNSCALED attention, greedy argmax, detok). The no-garbage guard passes with margin (top layout token '<b>' -> 'b' repeats 40/152 < the 0.5 repetition floor).",
+      "gguf": {
+        "repo": "cstr/smt-grandstaff-GGUF",
+        "file": "smt-grandstaff-q8_0.gguf",
+        "revision": "main",
+        "approx_size_mb": 24
+      },
+      "sample": "tests/regression/images/staff_smt.png",
+      "expected_text": "**ekern_1.0 <t> **ekern_1.0 <b> *clefF4 <t> *clefG2 <b> *k[b-] <t> *k[b-] <b> *M2/4 <t> *M2/4 <b> =- <t> =- <b> 8FL <t> 16r <b> . <t> 16ffLL <b> 8cJ <s> 8A <t> 16ee <b> . <t> 16ddJJ <b> 8CL <t> 16ccLL <b> . <t> 16b <b> 8cJ <s> 8A <t> 16cc <b> . <t> 16aJJ <b> = <t> = <b> 8GL <t> 8.aaL <s> 8.b- <b> 8eJ <s> 8c <s> 8B- <t> . <b> . <t> 16ggJk <b> 8CL <t> 4b-[ <b> 8eJ <s> 8c <s> 8B- <t> . <b> = <t> = <b> 4G <t> 16b-LL] <b> . <t> 16cc <b> . <t> 16ee <s> 16b- <b> . <t> 16ccJJ <b> 4C <t> 16ddLL <b> . <t> 16ee <b> . <t> 16dd <b> . <t> 16ccJJ <b> = <t> = <b> 8FL <t> 8.ggL <s> 8.a <b> 8fJ <s> 8A <t> . <b> . <t> 16ffJk <b> 8CL <t> 4a[ <b> 8fJ <s> 8c <s> 8A <t> . <b> = <t> = <b> *- <t> *- <b>  <b>",
+      "match": {
+        "max_cer": 0.1
+      }
+    },
+    {
+      "name": "pix2tex",
+      "engine": "math_ocr",
+      "_comment": "pix2tex-mfr printed math OCR (DeiT ViT encoder + TrOCR decoder, 28M -> LaTeX; the src/math_ocr.cpp VED path). Deterministic greedy decode. expected_text is the byte-exact q4_k decode on formula_quadratic.png, captured 2026-07-13: CPU==Metal identical and the CORRECT quadratic formula. Guards the DeiT+TrOCR encoder-decoder graph (patch embed, greedy AR decode, BPE detok); a graph-scramble regression yields wrong LaTeX far above max_cer. No-garbage guard passes (no degenerate repetition).",
+      "gguf": {
+        "repo": "cstr/pix2tex-mfr-gguf",
+        "file": "pix2tex-mfr-q4_k.gguf",
+        "revision": "main",
+        "approx_size_mb": 17
+      },
+      "sample": "tests/regression/images/formula_quadratic.png",
+      "expected_text": "x = \\frac { - b \\pm \\sqrt { b ^ { 2 } - 4 a c } } { 2 a }",
+      "match": {
+        "max_cer": 0.1
+      }
+    },
+    {
+      "name": "texteller",
+      "engine": "math_ocr",
+      "_comment": "TexTeller 3.0 math OCR (ViT + TrOCR VED, GELU decoder FFN, TexTeller preprocessing: trim+aspect-resize+white-pad to 448, mean 0.9545/std 0.1539). expected_text is the byte-exact q8_0 decode on formula_quadratic.png, captured 2026-07-13: matches HF OleehyO/TexTeller, f16==q8_0, CPU==Metal. GUARDS THE REGRESSION THAT SHIPPED BROKEN: the decoder FFN activation was hardcoded ReLU (needs GELU) + wrong preprocessing → garbled LaTeX; reverting either craters CER far above max_cer. Requires the GGUF to carry decoder.activation_function=gelu + encoder.image_mean/std/preprocess_pad (re-uploaded 2026-07-13).",
+      "gguf": {
+        "repo": "cstr/texteller-3-GGUF",
+        "file": "texteller-3-q8_0.gguf",
+        "revision": "main",
+        "approx_size_mb": 302
+      },
+      "sample": "tests/regression/images/formula_quadratic.png",
+      "expected_text": "\\[x= \\frac{-b \\pm \\sqrt{b^{2}-4ac}}{2a}\\]",
+      "match": {
+        "max_cer": 0.1
+      }
+    },
+    {
+      "name": "tesseract-lstm",
+      "engine": "tesseract-lstm",
+      "_comment": "Recognizer-only engine measured through the DBNet detection + line-crop + Tesseract-LSTM pipeline.",
+      "gguf": {
+        "repo": "cstr/tesseract-lstm-GGUF",
+        "file": "tesseract-eng-f16.gguf",
+        "revision": "main"
+      },
+      "detector": "dbnet-ic15-f16.gguf",
+      "pipeline_engine": "tesseract",
+      "sample": "tests/regression/images/fox.png",
+      "expected_text": "The quick brown fox jumps over the lazy dog. 12345",
+      "match": {
+        "max_cer": 0.1
+      }
+    },
+    {
+      "name": "tesseract-lstm-deu",
+      "engine": "tesseract-lstm",
+      "_comment": "German detector + line-crop recognizer smoke/benchmark; quality is recorded without a full-page transcription oracle.",
+      "gguf": {
+        "repo": "cstr/tesseract-lstm-GGUF",
+        "file": "tesseract-deu-q8_0.gguf",
+        "revision": "main"
+      },
+      "detector": "dbnet-ic15-f16.gguf",
+      "pipeline_engine": "tesseract",
+      "sample": "tests/regression/images/cc0/german_official_print.jpg",
+      "expected_text": null
+    },
+    {
+      "name": "parseq",
+      "engine": "parseq",
+      "_comment": "Scene-text recognizer smoke. Quality is unscored until a line-crop fixture and transcription are added.",
+      "gguf": {
+        "repo": "cstr/parseq-GGUF",
+        "file": "parseq-tiny-q8_0.gguf",
+        "revision": "main"
+      },
+      "sample": "tests/regression/images/fox.png",
+      "expected_text": null,
+      "match": {
+        "max_cer": 0.1
+      }
+    },
+    {
+      "name": "ppocrv6-tiny",
+      "engine": "ppocrv6",
+      "_comment": "PP-OCRv6 tiny detector + Q8-head recognizer through the native detector-to-line-crop pipeline.",
+      "gguf": {"repo": "cstr/PP-OCRv6_tiny_rec-GGUF", "file": "PP-OCRv6_tiny_rec-q8-head.gguf", "revision": "main"},
+      "detector": {"repo": "cstr/PP-OCRv6-tiny-det-GGUF", "file": "PP-OCRv6_tiny_det-f16.gguf", "revision": "main"},
+      "sample": "tests/regression/images/fox.png", "expected_text": null,
+      "diff": {"binary": "test-ppocrv6-rec", "ref": {"repo": "cstr/PP-OCRv6_tiny_rec-GGUF", "file": "PP-OCRv6_tiny_rec-fox-ref.gguf", "revision": "main"}, "args": ["tests/regression/images/fox.png"], "thresholds": {"*": 0.999}}
+    },
+    {
+      "name": "ppocrv6-small",
+      "engine": "ppocrv6",
+      "_comment": "PP-OCRv6 small detector + Q8-head recognizer through the native detector-to-line-crop pipeline.",
+      "gguf": {"repo": "cstr/PP-OCRv6_small_rec-GGUF", "file": "PP-OCRv6_small_rec-q8-head.gguf", "revision": "main"},
+      "detector": {"repo": "cstr/PP-OCRv6-small-det-GGUF", "file": "PP-OCRv6_small_det-f16.gguf", "revision": "main"},
+      "sample": "tests/regression/images/fox.png", "expected_text": null,
+      "diff": {"binary": "test-ppocrv6-rec", "ref": {"repo": "cstr/PP-OCRv6_small_rec-GGUF", "file": "PP-OCRv6_small_rec-fox-ref.gguf", "revision": "main"}, "args": ["tests/regression/images/fox.png"], "thresholds": {"*": 0.999}}
+    },
+    {
+      "name": "ppocrv6-medium",
+      "engine": "ppocrv6",
+      "_comment": "PP-OCRv6 medium detector + Q8-head recognizer through the native detector-to-line-crop pipeline.",
+      "gguf": {"repo": "cstr/PP-OCRv6_medium_rec-GGUF", "file": "PP-OCRv6_medium_rec-q8-head.gguf", "revision": "main"},
+      "detector": {"repo": "cstr/PP-OCRv6-medium-det-GGUF", "file": "PP-OCRv6_medium_det-f16.gguf", "revision": "main"},
+      "sample": "tests/regression/images/fox.png", "expected_text": null,
+      "diff": {"binary": "test-ppocrv6-rec", "ref": {"repo": "cstr/PP-OCRv6_medium_rec-GGUF", "file": "PP-OCRv6_medium_rec-fox-ref.gguf", "revision": "main"}, "args": ["tests/regression/images/fox.png"], "thresholds": {"*": 0.999}}
+    }
+  ]
+}

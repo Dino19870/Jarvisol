@@ -1,0 +1,9 @@
+Composant;Taille_Candidate_EXT03;Taille_Final_V1;Taille_Final_V2;Delta_V2_vs_V1;Justification_et_Usage
+TOTAL_GLOBAL;53.46 GiB (58269 f);112.66 GiB (59733 f);40.89 GiB (65740 f);-71.76 GiB;Repackaging Lean V2 base sur le squelette canonique VAGUE-C sans banques SD externes
+APP;0.22 GiB;0.22 GiB;0.19 GiB;+0.00 GiB;jarvisol.exe Release post-gel, app.so native, flutter_windows et DLLs plugins
+DATA;45.89 GiB;35.19 GiB;21.67 GiB;-13.52 GiB;Exclusion des caches XNNPACK/mldrift (8.3 Go), des medias de test et audiobooks; conservation des modeles LiteRT et Whisper
+MODEL;13.05 GiB;69.31 GiB;10.95 GiB;-58.36 GiB;Exclusion formelle du dossier root models/ Stable-Diffusion (55 Go) non-inclus dans le manifest Candidate
+RUNTIME_WEB_MEDIA;0.47 GiB;0.47 GiB;0.47 GiB;+0.00 GiB;yt-dlp v2026.08.19, ffmpeg v8.0, ffprobe, deno v2.5.3, SHA-256 sums et licences (REQ-POST-001)
+RUNTIME_NODE_GMAIL;0.00 GiB;0.16 GiB;0.21 GiB;+0.00 GiB;Node.js portable v25.9.0 embarque avec @monsoft/mcp-gmail v0.4.0 (0 token/credentials personnels)
+RUNTIME_LITERT;0.32 GiB;0.32 GiB;0.32 GiB;+0.00 GiB;Python portable 3.11.15, litert-lm 0.16.0, FastAPI, Uvicorn, manifest.json
+OTHER_RUNTIME;6.79 GiB;6.79 GiB;6.79 GiB;+0.00 GiB;Moteur VoiceBake C#/.NET 8, modeles vocaux TTS associes (5.3 Go) et sd_vulkan (0.11 Go)

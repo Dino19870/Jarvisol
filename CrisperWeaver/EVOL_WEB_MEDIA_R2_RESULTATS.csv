@@ -1,0 +1,20 @@
+Test_ID;Scenario;Oracle;Resultat;Preuve;Commentaire
+WEBR2-001;Audit et constantes de pagination;defaultSearchLimit=20, searchLimitIncrement=10, maxSearchLimit=50;PASS;test/web_media_search_test.dart:160-164;Constantes explicites et maîtrisables exposées par WebMediaService
+WEBR2-002;Formatage date upload_date en francais;Format YYYYMMDD ou ISO converti en JJ/MM/AAAA;PASS;test/web_media_search_test.dart:166-177;Parser multi-format avec formatage DateFormat('dd/MM/yyyy')
+WEBR2-003;Repli sur timestamp / release_timestamp;Repli sur epoch unix si upload_date absent;PASS;test/web_media_search_test.dart:179-195;Priorite stricte upload_date -> timestamp -> release_timestamp
+WEBR2-004;Gestion absence de date;formattedPublicationDate == null, affichage 'Date indisponible';PASS;test/web_media_search_test.dart:197-206;Aucune date inventee ou hallucinee en cas d'absence
+WEBR2-005;Extraction et normalisation du resume;Description extraite de la recherche, HTML/espaces nettoyes;PASS;test/web_media_search_test.dart:208-220;Extraction instantanee sans appel LLM ni getMetadata
+WEBR2-006;Protection structurelle resume long;Texte complet preserve dans le modele, 2 lignes max dans l'UI;PASS;test/web_media_search_test.dart:222-230;Conteneur UI securise avec maxLines: 2 et TextOverflow.ellipsis
+WEBR2-007;Gestion resume absent ou vide;description null ou blanche -> summaryText == null;PASS;test/web_media_search_test.dart:232-243;Aucun bloc vide affiche dans la carte de resultat
+WEBR2-008;Pagination incrementale et deduplication;Bouton 'Afficher plus' charge +10 resultats, deduplication id/url;PASS;test/web_media_search_test.dart:245-273;Preservation de l'ordre, deduplication par Set et arret au plafond 50
+WEBR2-009;Semantique des jokers (* et ?);Les jokers transmettent la requete brute et filtrent localement;PASS;test/web_media_search_test.dart:275-283;Non-regression de la fonctionnalite joker introduite en REQ-POST-001
+WEBR2-010;Non-regression mode URL directe;Saisie d'une URL directe bascule immediatement en import;PASS;test/web_media_search_test.dart:285-296;Bifurcation URL / Recherche preservee a 100%
+WEBR2-011;Validite URL selectionnee;Le resultat selectionne fournit une URL exploitable par les pipelines;PASS;test/web_media_search_test.dart:298-311;Compatibilite totale avec getMetadata, downloadAudio et downloadVideo
+WEBR2-012;Absence d'analyse complete par carte;Flux NDJSON exploite directement, getMetadata appele 0 fois;PASS;test/web_media_search_test.dart:313-324;Reactivite maximale et cout d'execution minimal de la recherche
+WEBR2-013;Garde-fou desactivation service;web_media_enabled=false bloque la recherche sans Process.start;PASS;test/web_media_search_test.dart:326-339;Securite portable et respect de la configuration utilisateur
+WEBR2-014;Presence des binaires portables;yt-dlp.exe et ffmpeg.exe presents et executables;PASS;test/web_media_search_test.dart:341-352;Binaires autonomes valides dans runtime/web_media/
+TNR-027;Updater securise yt-dlp transactionnel;Staging .tmp, validation taille/version, backup .bak_prev, rollback;PASS;test/services/web_media_updater_runner_test.dart;Non-regression de la securite transactionnelle yt-dlp
+TNR-076;Runner securise enumeratePlaylist/getComments;Arguments en liste distincte, consommation flux, exitCode verifie;PASS;test/services/web_media_updater_runner_test.dart;Non-regression de l'execution securisee yt-dlp
+TNR-136;Decouverte et integrite de l'environnement;Binaires portables decouverts avec succes en environnement local;PASS;test/services/web_media_updater_runner_test.dart;Canary non-regression Web Media valide
+BUILD_ADDITIONNEL;Contrainte ZERO nouveau build Release;BUILD_ADDITIONNEL = 0 (aucune compilation Release executee);PASS;Environnement source CrisperWeaver;Aucun flutter build windows execute durant cette mission
+RELEASE_V2_4_MUTATION;Integrite stricte baseline figee;RELEASE_V2_4_MUTATION = 0 (distribution Final_v2 intacte);PASS;Jarvisol_V1_POST_GEL_Final_v2;65768 fichiers strictement identiques a la cloture v2.4

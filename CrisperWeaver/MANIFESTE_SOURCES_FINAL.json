@@ -1,0 +1,43 @@
+{
+  "manifest_version": "1.0",
+  "campaign": "JARVISOL VAGUE-C FINALE",
+  "scope": "CORR-08 & CORR-09 Final Source Deliverables",
+  "git_commit": "1a6a27c18c25055deb00e04338ba80fefce11ed7",
+  "files": [
+    {
+      "path": "lib/widgets/document_chat_widget.dart",
+      "size_bytes": 188488,
+      "sha256": "fc51a045a6eaf4edbe72ee3cbe958b2f5fa0ae64b370c61089608a1e6a82770d"
+    },
+    {
+      "path": "lib/services/cloud_llm_cleanup_service.dart",
+      "size_bytes": 8676,
+      "sha256": "f4431ede04c2ff75a86a8a8093f69ca8b5bb920f64932c37c9f2e83290e3fd59"
+    },
+    {
+      "path": "lib/screens/about_screen.dart",
+      "size_bytes": 7476,
+      "sha256": "985b1534b5a3cb455b77a48e82c08fbe5e4cf489a8eaafebeabd029dcba0e95f"
+    },
+    {
+      "path": "lib/widgets/transcription_output_widget.dart",
+      "size_bytes": 82433,
+      "sha256": "bc0001c3d2f56b8ee99dbdc6dff8f5bd9d3374aad618a19b08591474f591d770"
+    },
+    {
+      "path": "lib/screens/settings_screen.dart",
+      "size_bytes": 60834,
+      "sha256": "eec9eead3ef64d93715f03dff07afb208ac7fbb113b28efd925f22f4a811ebdc"
+    },
+    {
+      "path": "test/cloud_llm_cleanup_service_test.dart",
+      "size_bytes": 10199,
+      "sha256": "b260fd09b81d69ff7cc2a7ce219e162aebd693cce9de7e93138d8aeae54fd222"
+    },
+    {
+      "path": "windows/CMakeLists.txt",
+      "size_bytes": 10576,
+      "sha256": "b8fc38e96868310f384b89c4dc375af604a31bb30556bf8fa0120819e8e47dbd"
+    }
+  ]
+}

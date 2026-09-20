@@ -1,0 +1,9 @@
+# Include native libs that are staged into crispembed/ by the wheel CI
+# job before `pip wheel` runs. The package-data glob in pyproject.toml is
+# the canonical declaration; MANIFEST.in is the sdist counterpart so a
+# `pip sdist` user gets the loader code (the .so is built locally).
+recursive-include crispembed *.so *.so.* *.dylib *.dll *.pyd
+include LICENSE
+include README.md
+# Staged by setup.py from the repo root; see _stage_policy().
+include crispembed/POLICY.md

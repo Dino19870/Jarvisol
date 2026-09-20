@@ -1,0 +1,913 @@
+// test_ocr_orchestrator.cpp — comprehensive tests for the OCR pipeline
+// orchestrator: source-type classifier, accept-gate logic, multi-stage
+// escalation, per-stage config, chain selection.
+//
+// No models needed (all logic tests use synthetic images + config).
+// Model-dependent tests (Tesseract, punctuation) gated behind
+// CRISPEMBED_MODELS_DIR env var.
+//
+// Usage: test-ocr-orchestrator   (exits non-zero on failure)
+
+#include "ocr_orchestrator.h"
+#include "tesseract_pageseg.h"
+#include "core/clean_exit.h"
+#include "crispembed.h"
+
+// stbi_write_png is exported by the crispembed lib.
+extern "C" int stbi_write_png(char const * filename, int w, int h, int comp, const void * data, int stride_in_bytes);
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <chrono>
+#include <string>
+#include <vector>
+
+static int n_pass = 0, n_fail = 0;
+#define CHECK(cond, msg)                                                                                               \
+    do {                                                                                                               \
+        if (cond) {                                                                                                    \
+            printf("  PASS: %s\n", msg);                                                                               \
+            n_pass++;                                                                                                  \
+        } else {                                                                                                       \
+            printf("  FAIL: %s\n", msg);                                                                               \
+            n_fail++;                                                                                                  \
+        }                                                                                                              \
+    } while (0)
+
+static std::string write_temp(const std::vector<uint8_t> & px, int w, int h, int ch, const char * name) {
+    const char * dir = getenv("TMPDIR");
+    if (!dir || !*dir) dir = "/tmp";
+    std::string path = std::string(dir) + "/orch_test_" + name + ".png";
+    stbi_write_png(path.c_str(), w, h, ch, px.data(), w * ch);
+    return path;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 1. default_config() structure
+// ═══════════════════════════════════════════════════════════════════════
+static void test_default_config() {
+    printf("── default_config ──\n");
+    using namespace ocr_orchestrator;
+
+    config cfg = default_config();
+    CHECK(cfg.router, "router on");
+    CHECK(!cfg.chains.empty(), "has chains");
+
+    bool has_auto = false, has_scan = false, has_photo = false, has_shot = false;
+    for (auto & c : cfg.chains) {
+        if (c.type == source_type::auto_detect) has_auto = true;
+        if (c.type == source_type::scanned_doc) has_scan = true;
+        if (c.type == source_type::photo) has_photo = true;
+        if (c.type == source_type::screenshot) has_shot = true;
+    }
+    CHECK(has_auto && has_scan && has_photo && has_shot, "chains for auto/scan/photo/screenshot");
+
+    // Per-source cleanup intent
+    for (auto & c : cfg.chains) {
+        if (c.type == source_type::scanned_doc && !c.stages.empty())
+            CHECK(c.stages[0].cleanup.params.binarize == 1, "scanned_doc chain binarizes");
+        if (c.type == source_type::photo && !c.stages.empty())
+            CHECK(c.stages[0].cleanup.denoise, "photo chain denoises (NAFNet)");
+        if (c.type == source_type::screenshot && !c.stages.empty())
+            CHECK(!c.stages[0].cleanup.enabled || !c.stages[0].cleanup.params.binarize,
+                  "screenshot chain does not binarize");
+    }
+
+    // Default accept-gate values
+    for (auto & c : cfg.chains) {
+        for (auto & s : c.stages) {
+            CHECK(s.accept.min_chars >= 1, "accept gate min_chars >= 1");
+            CHECK(s.accept.min_confidence >= 0.0f, "accept gate min_confidence >= 0");
+        }
+    }
+}
+
+static void test_structured_capability_validation() {
+    printf("── structured capability validation ──\n");
+    using namespace ocr_orchestrator;
+
+    config tables;
+    tables.route_tables = true;
+    context * ctx = nullptr;
+    CHECK(!load(&ctx, tables), "tables require configured layout and table models");
+    CHECK(ctx == nullptr, "failed capability validation does not allocate context");
+
+    config formulas;
+    formulas.route_formulas = true;
+    CHECK(!load(&ctx, formulas), "formulas require configured layout and formula models");
+    CHECK(ctx == nullptr, "formula validation does not allocate context");
+}
+
+static void test_fraktur_stage_profile() {
+    printf("── Fraktur stage profile ──\n");
+    using namespace ocr_orchestrator;
+    const stage s = tesseract_fraktur_stage();
+    CHECK(s.eng == engine::tesseract_fraktur, "explicit tesseract_fraktur engine");
+    CHECK(s.cleanup.enabled, "Fraktur cleanup enabled");
+    CHECK(s.cleanup.params.binarize == 0, "Fraktur profile preserves grayscale page");
+    CHECK(s.params.det_min_height == 18, "Fraktur profile lowers detector line height");
+    CHECK(s.params.det_width_height_ratio == 20.0f, "Fraktur profile accepts long lines");
+    CHECK(s.accept.min_chars == 4 && s.accept.min_confidence == 0.25f, "Fraktur profile gate");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 2. Source-type classifier
+// ═══════════════════════════════════════════════════════════════════════
+static void test_classifier() {
+    printf("── classify_file ──\n");
+    using namespace ocr_orchestrator;
+
+    // Colourful image → photo (mean saturation high)
+    {
+        std::vector<uint8_t> photo(64 * 64 * 3);
+        for (int i = 0; i < 64 * 64; i++) {
+            photo[i * 3 + 0] = 200;
+            photo[i * 3 + 1] = 30;
+            photo[i * 3 + 2] = 20;
+        }
+        std::string p = write_temp(photo, 64, 64, 3, "photo");
+        CHECK(classify_file(p.c_str()) == source_type::photo, "saturated red → photo");
+    }
+
+    // White page with sparse black lines → scanned_doc
+    {
+        std::vector<uint8_t> doc(80 * 80 * 3, 255);
+        for (int y = 20; y < 80; y += 20)
+            for (int x = 0; x < 80; x++)
+                for (int ch = 0; ch < 3; ch++) doc[(y * 80 + x) * 3 + ch] = 0;
+        std::string d = write_temp(doc, 80, 80, 3, "doc");
+        CHECK(classify_file(d.c_str()) == source_type::scanned_doc, "white page with lines → scanned_doc");
+    }
+
+    // Very wide grayscale strip → screenshot (aspect > 2.2)
+    {
+        std::vector<uint8_t> wide(300 * 50 * 3, 240);
+        std::string w = write_temp(wide, 300, 50, 3, "wide");
+        CHECK(classify_file(w.c_str()) == source_type::screenshot, "wide strip → screenshot");
+    }
+
+    // All-white image → scanned_doc (high white fraction, low saturation)
+    {
+        std::vector<uint8_t> white(100 * 100 * 3, 255);
+        std::string p = write_temp(white, 100, 100, 3, "white");
+        auto t = classify_file(p.c_str());
+        CHECK(t == source_type::scanned_doc || t == source_type::screenshot, "all-white → scanned_doc or screenshot");
+    }
+
+    // Very tall image → screenshot (aspect > 2.2 in either direction)
+    {
+        std::vector<uint8_t> tall(50 * 300 * 3, 200);
+        std::string p = write_temp(tall, 50, 300, 3, "tall");
+        CHECK(classify_file(p.c_str()) == source_type::screenshot, "tall strip → screenshot");
+    }
+
+    // Green saturated → photo
+    {
+        std::vector<uint8_t> green(80 * 80 * 3);
+        for (int i = 0; i < 80 * 80; i++) {
+            green[i * 3 + 0] = 20;
+            green[i * 3 + 1] = 180;
+            green[i * 3 + 2] = 30;
+        }
+        std::string p = write_temp(green, 80, 80, 3, "green");
+        CHECK(classify_file(p.c_str()) == source_type::photo, "saturated green → photo");
+    }
+
+    // Missing file → fallback (no crash)
+    CHECK(classify_file("/no/such/file.png") == source_type::scanned_doc, "missing file → scanned_doc fallback");
+
+    // NULL path → no crash
+    CHECK(classify_file(nullptr) == source_type::scanned_doc, "null path → scanned_doc fallback");
+}
+
+static void test_tesseract_pageseg_geometry() {
+    printf("── Tesseract classical page segmentation geometry ──\n");
+    constexpr int w = 120, h = 48;
+    std::vector<uint8_t> gray((size_t)w * h, 245);
+    for (int y = 8; y <= 12; ++y)
+        for (int x = 12; x < 106; ++x) gray[(size_t)y * w + x] = 20;
+    for (int y = 30; y <= 34; ++y)
+        for (int x = 20; x < 96; ++x) gray[(size_t)y * w + x] = 20;
+
+    const auto boxes = tesseract_pageseg::segment_gray(gray.data(), w, h);
+    CHECK(boxes.size() == 2, "classical page segmentation finds two text bands");
+    if (boxes.size() == 2) {
+        CHECK(boxes[0].y < boxes[1].y, "classical page segmentation preserves top-to-bottom order");
+        CHECK(boxes[0].x <= 12.0f && boxes[0].y <= 8.0f, "first band includes deterministic padding");
+        CHECK(boxes[0].x + boxes[0].w >= 106.0f && boxes[1].x + boxes[1].w >= 96.0f,
+              "band geometry covers the detected ink");
+    }
+
+    // The component path is experimental, but its default legacy grouping is
+    // a supported gated fallback. Use separated glyph-like blobs so the
+    // connected-component filters are exercised rather than a single bar.
+    std::fill(gray.begin(), gray.end(), 245);
+    for (int row_y : { 8, 30 }) {
+        for (int glyph = 0; glyph < 5; ++glyph) {
+            const int x0 = 12 + glyph * 18;
+            for (int y = row_y; y < row_y + 7; ++y)
+                for (int x = x0; x < x0 + 8; ++x) gray[(size_t)y * w + x] = 20;
+        }
+    }
+    const auto component_boxes = tesseract_pageseg::segment_gray_components(gray.data(), w, h);
+    CHECK(component_boxes.size() == 2, "component page segmentation groups two blob rows");
+    if (component_boxes.size() == 2)
+        CHECK(component_boxes[0].y < component_boxes[1].y, "component rows preserve top-to-bottom order");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 3. Accept-gate logic (tested via run_file with no models)
+// ═══════════════════════════════════════════════════════════════════════
+static void test_accept_gate() {
+    printf("── accept_gate ──\n");
+    using namespace ocr_orchestrator;
+
+    // The accept gate logic: passes if text.size() >= min_chars AND
+    // (min_confidence == 0 || mean_confidence >= min_confidence).
+    // Since no models are loaded, run_file produces empty text → always fails gate.
+    // We verify by checking stages_tried == number of enabled stages.
+
+    // Create a white test image
+    std::vector<uint8_t> img(100 * 100 * 3, 255);
+    std::string path = write_temp(img, 100, 100, 3, "gate_test");
+
+    // Single-stage chain, no models → stage runs but produces empty → fails gate
+    {
+        config cfg;
+        cfg.router = false;
+        chain ch;
+        ch.type = source_type::auto_detect;
+        stage s;
+        s.eng = engine::dbnet_trocr;
+        s.accept.min_chars = 8;
+        s.accept.min_confidence = 0.5f;
+        ch.stages.push_back(s);
+        cfg.chains.push_back(ch);
+
+        context * ctx = nullptr;
+        CHECK(load(&ctx, cfg), "load succeeds with no models");
+        result r = run_file(ctx, path.c_str());
+        CHECK(r.stages_tried == 1, "single stage tried");
+        CHECK(r.page_width == 100 && r.page_height == 100, "result carries page dimensions");
+        CHECK(r.routing.text_indices.empty(), "empty OCR result has empty routing plan");
+        CHECK(r.full_text.empty(), "empty text (no models)");
+        CHECK(r.mean_confidence == 0.0f, "zero confidence (no models)");
+        ocr_orchestrator::free(ctx);
+    }
+
+    // Zero min_chars, zero min_confidence → gate should pass even for empty
+    // ... except empty text has size 0 which is < min_chars=0? Let's check.
+    // passes_gate: size >= min_chars (0 >= 0 = true) && (0 > 0? no → skip) = true
+    // But text is still empty because no engine runs. Actually even min_chars=0
+    // would pass for empty text. But the engine still produces no regions.
+    // run_file returns best result, which has empty text anyway.
+    // The gate logic is tested implicitly: if stages_tried matches the
+    // number of stages, the gate failed for all of them.
+
+    // Two-stage chain: both fail → stages_tried == 2
+    {
+        config cfg;
+        cfg.router = false;
+        chain ch;
+        ch.type = source_type::auto_detect;
+        stage s1;
+        s1.eng = engine::dbnet_trocr;
+        s1.accept.min_chars = 8;
+        ch.stages.push_back(s1);
+        stage s2;
+        s2.eng = engine::got; // also no model → empty
+        s2.accept.min_chars = 8;
+        ch.stages.push_back(s2);
+        cfg.chains.push_back(ch);
+
+        context * ctx = nullptr;
+        load(&ctx, cfg);
+        result r = run_file(ctx, path.c_str());
+        CHECK(r.stages_tried == 2, "two stages tried (both fail gate)");
+        ocr_orchestrator::free(ctx);
+    }
+
+    // Disabled stage → skipped
+    {
+        config cfg;
+        cfg.router = false;
+        chain ch;
+        ch.type = source_type::auto_detect;
+        stage s1;
+        s1.eng = engine::dbnet_trocr;
+        s1.enabled = false;
+        ch.stages.push_back(s1);
+        stage s2;
+        s2.eng = engine::got;
+        ch.stages.push_back(s2);
+        cfg.chains.push_back(ch);
+
+        context * ctx = nullptr;
+        load(&ctx, cfg);
+        result r = run_file(ctx, path.c_str());
+        CHECK(r.stages_tried == 1, "disabled stage skipped (only 1 tried)");
+        ocr_orchestrator::free(ctx);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 4. Multi-stage escalation + chain selection
+// ═══════════════════════════════════════════════════════════════════════
+static void test_multi_stage() {
+    printf("── multi-stage escalation ──\n");
+    using namespace ocr_orchestrator;
+
+    std::vector<uint8_t> img(100 * 100 * 3, 255);
+    std::string path = write_temp(img, 100, 100, 3, "multi_test");
+
+    // 3-stage chain: all fail (no models) → best-by-yield returned
+    {
+        config cfg;
+        cfg.router = false;
+        chain ch;
+        ch.type = source_type::auto_detect;
+        for (int i = 0; i < 3; i++) {
+            stage s;
+            s.eng = engine::dbnet_trocr;
+            s.accept.min_chars = 5;
+            ch.stages.push_back(s);
+        }
+        cfg.chains.push_back(ch);
+
+        context * ctx = nullptr;
+        load(&ctx, cfg);
+        result r = run_file(ctx, path.c_str());
+        CHECK(r.stages_tried == 3, "all 3 stages tried");
+        CHECK(r.full_text.empty(), "best result is still empty (no models)");
+        ocr_orchestrator::free(ctx);
+    }
+
+    // Chain with mixed engines → each engine type attempted
+    {
+        config cfg;
+        cfg.router = false;
+        chain ch;
+        ch.type = source_type::auto_detect;
+        stage s1;
+        s1.eng = engine::dbnet_trocr;
+        stage s2;
+        s2.eng = engine::tesseract;
+        stage s3;
+        s3.eng = engine::got;
+        ch.stages.push_back(s1);
+        ch.stages.push_back(s2);
+        ch.stages.push_back(s3);
+        cfg.chains.push_back(ch);
+
+        context * ctx = nullptr;
+        load(&ctx, cfg);
+        result r = run_file(ctx, path.c_str());
+        CHECK(r.stages_tried == 3, "3 different engines tried");
+        ocr_orchestrator::free(ctx);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 5. Per-stage config isolation
+// ═══════════════════════════════════════════════════════════════════════
+static void test_per_stage_config() {
+    printf("── per-stage config ──\n");
+    using namespace ocr_orchestrator;
+
+    // Verify stages have independent accept-gate thresholds
+    {
+        config cfg;
+        cfg.router = false;
+        chain ch;
+        ch.type = source_type::auto_detect;
+
+        stage s1;
+        s1.eng = engine::dbnet_trocr;
+        s1.accept.min_chars = 100; // very high → will fail
+        s1.accept.min_confidence = 0.9f;
+        s1.cleanup.enabled = true;
+        s1.cleanup.params.binarize = 1;
+        ch.stages.push_back(s1);
+
+        stage s2;
+        s2.eng = engine::dbnet_trocr;
+        s2.accept.min_chars = 1;         // very low
+        s2.accept.min_confidence = 0.0f; // no conf check
+        s2.cleanup.enabled = false;
+        ch.stages.push_back(s2);
+
+        cfg.chains.push_back(ch);
+
+        // Verify the config is stored correctly
+        CHECK(cfg.chains[0].stages[0].accept.min_chars == 100, "stage 0: min_chars=100");
+        CHECK(cfg.chains[0].stages[1].accept.min_chars == 1, "stage 1: min_chars=1");
+        CHECK(cfg.chains[0].stages[0].cleanup.params.binarize == 1, "stage 0: binarize on");
+        CHECK(!cfg.chains[0].stages[1].cleanup.enabled, "stage 1: cleanup off");
+        CHECK(cfg.chains[0].stages[0].accept.min_confidence == 0.9f, "stage 0: min_confidence=0.9");
+        CHECK(cfg.chains[0].stages[1].accept.min_confidence == 0.0f, "stage 1: min_confidence=0.0");
+    }
+
+    // Verify different engine_params per stage
+    {
+        config cfg;
+        cfg.router = false;
+        chain ch;
+        ch.type = source_type::auto_detect;
+
+        stage s1;
+        s1.params.det_prob_threshold = 0.1f;
+        s1.params.det_target_short = 512;
+        ch.stages.push_back(s1);
+
+        stage s2;
+        s2.params.det_prob_threshold = 0.5f;
+        s2.params.det_target_short = 1024;
+        ch.stages.push_back(s2);
+
+        cfg.chains.push_back(ch);
+
+        CHECK(cfg.chains[0].stages[0].params.det_prob_threshold == 0.1f, "stage 0: det_prob=0.1");
+        CHECK(cfg.chains[0].stages[1].params.det_prob_threshold == 0.5f, "stage 1: det_prob=0.5");
+        CHECK(cfg.chains[0].stages[0].params.det_target_short == 512, "stage 0: target_short=512");
+        CHECK(cfg.chains[0].stages[1].params.det_target_short == 1024, "stage 1: target_short=1024");
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 6. Router + chain selection
+// ═══════════════════════════════════════════════════════════════════════
+static void test_chain_selection() {
+    printf("── chain selection ──\n");
+    using namespace ocr_orchestrator;
+
+    // Router OFF → always uses first chain regardless of image type
+    {
+        config cfg;
+        cfg.router = false;
+
+        chain ch_auto;
+        ch_auto.type = source_type::auto_detect;
+        stage s;
+        s.eng = engine::dbnet_trocr;
+        ch_auto.stages.push_back(s);
+        cfg.chains.push_back(ch_auto);
+
+        chain ch_photo;
+        ch_photo.type = source_type::photo;
+        stage sp;
+        sp.eng = engine::got;
+        ch_photo.stages.push_back(sp);
+        cfg.chains.push_back(ch_photo);
+
+        // Even with a colourful photo image, router=false → uses auto chain
+        std::vector<uint8_t> photo(64 * 64 * 3);
+        for (int i = 0; i < 64 * 64; i++) {
+            photo[i * 3 + 0] = 200;
+            photo[i * 3 + 1] = 30;
+            photo[i * 3 + 2] = 20;
+        }
+        std::string p = write_temp(photo, 64, 64, 3, "chain_photo");
+
+        context * ctx = nullptr;
+        load(&ctx, cfg);
+        result r = run_file(ctx, p.c_str());
+        // Router off → source_type::auto_detect used → picks auto chain
+        CHECK(r.used_type == source_type::auto_detect, "router off → auto_detect type");
+        ocr_orchestrator::free(ctx);
+    }
+
+    // Router ON → classifies image and picks matching chain
+    {
+        config cfg;
+        cfg.router = true;
+
+        chain ch_auto;
+        ch_auto.type = source_type::auto_detect;
+        stage sa;
+        sa.eng = engine::dbnet_trocr;
+        ch_auto.stages.push_back(sa);
+        cfg.chains.push_back(ch_auto);
+
+        chain ch_photo;
+        ch_photo.type = source_type::photo;
+        stage sp;
+        sp.eng = engine::got;
+        ch_photo.stages.push_back(sp);
+        cfg.chains.push_back(ch_photo);
+
+        // Colourful photo → classifier returns photo → picks photo chain
+        std::vector<uint8_t> photo(64 * 64 * 3);
+        for (int i = 0; i < 64 * 64; i++) {
+            photo[i * 3 + 0] = 200;
+            photo[i * 3 + 1] = 30;
+            photo[i * 3 + 2] = 20;
+        }
+        std::string p = write_temp(photo, 64, 64, 3, "chain_photo2");
+
+        context * ctx = nullptr;
+        load(&ctx, cfg);
+        result r = run_file(ctx, p.c_str());
+        CHECK(r.used_type == source_type::photo, "router on + photo → photo type selected");
+        ocr_orchestrator::free(ctx);
+    }
+
+    // Empty config → no crash
+    {
+        config cfg;
+        cfg.chains.clear();
+        context * ctx = nullptr;
+        load(&ctx, cfg);
+        result r = run_file(ctx, "/tmp/orch_test_white.png");
+        CHECK(r.stages_tried == 0, "empty config → 0 stages tried");
+        ocr_orchestrator::free(ctx);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 7. C API (crispembed_ocr_pipeline_*)
+// ═══════════════════════════════════════════════════════════════════════
+static void test_c_api() {
+    printf("── C API ──\n");
+
+    // defaults
+    crispembed_ocr_pipeline_params pp = crispembed_ocr_pipeline_defaults();
+    CHECK(pp.router == 1, "C API defaults: router=1");
+    CHECK(pp.min_chars >= 1, "C API defaults: min_chars >= 1");
+    CHECK(pp.min_confidence > 0.0f, "C API defaults: min_confidence > 0");
+
+    // init with NULL models → succeeds (lazy loading)
+    pp.det_model = nullptr;
+    pp.rec_model = nullptr;
+    pp.nafnet_model = nullptr;
+    pp.vlm_model = nullptr;
+    pp.punct_model = nullptr;
+    void * ctx = crispembed_ocr_pipeline_init(&pp, 4);
+    CHECK(ctx != nullptr, "C API init with NULL models succeeds");
+
+    if (ctx) {
+        crispembed_ocr_capabilities caps{};
+        CHECK(crispembed_ocr_pipeline_capabilities(ctx, &caps) == 1, "C API capabilities query succeeds");
+        CHECK(caps.layout == 0 && caps.tables == 0 && caps.formulas == 0, "default C API has no structured backends");
+        // Run on a synthetic image → no crash, returns empty
+        std::vector<uint8_t> img(100 * 100 * 3, 255);
+        std::string path = write_temp(img, 100, 100, 3, "capi_test");
+
+        int n_res = 0;
+        const char * full_text = nullptr;
+        float mean_conf = 0.0f;
+        const crispembed_ocr_result * res =
+            crispembed_ocr_pipeline_run(ctx, path.c_str(), &n_res, &full_text, &mean_conf);
+        CHECK(n_res == 0, "C API run with no models → 0 regions");
+        // full_text may be NULL or empty
+        CHECK(!full_text || full_text[0] == '\0' || n_res == 0, "C API run → empty text");
+        int n_metrics = -1;
+        const crispembed_ocr_stage_metric * metrics = crispembed_ocr_pipeline_stage_metrics(ctx, &n_metrics);
+        CHECK(n_metrics >= 0, "C API stage metrics query succeeds");
+        if (n_metrics > 0) {
+            CHECK(metrics != nullptr, "C API stage metrics pointer is present");
+            CHECK(metrics[0].index >= 0 && metrics[0].elapsed_ms >= 0.0, "C API stage metric fields are valid");
+        }
+
+        crispembed_ocr_pipeline_free(ctx);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 8. Edge cases
+// ═══════════════════════════════════════════════════════════════════════
+static void test_edge_cases() {
+    printf("── edge cases ──\n");
+    using namespace ocr_orchestrator;
+
+    // NULL context → no crash
+    {
+        result r = run_file(nullptr, "/tmp/test.png");
+        CHECK(r.full_text.empty(), "null context → empty result");
+    }
+
+    // NULL image path → no crash
+    {
+        config cfg = default_config();
+        context * ctx = nullptr;
+        load(&ctx, cfg);
+        result r = run_file(ctx, nullptr);
+        CHECK(r.full_text.empty(), "null path → empty result");
+        ocr_orchestrator::free(ctx);
+    }
+
+    // free(NULL) → no crash
+    ocr_orchestrator::free(nullptr);
+    CHECK(true, "free(nullptr) → no crash");
+
+    // Load with verbose → no crash
+    {
+        config cfg = default_config();
+        cfg.verbose = true;
+        context * ctx = nullptr;
+        CHECK(load(&ctx, cfg), "load with verbose=true succeeds");
+        ocr_orchestrator::free(ctx);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 9. Model-dependent: Tesseract regression (gated)
+// ═══════════════════════════════════════════════════════════════════════
+static void test_tesseract_regression() {
+    printf("── tesseract regression (model-gated) ──\n");
+
+    const char * models_dir = getenv("CRISPEMBED_MODELS_DIR");
+    if (!models_dir || !models_dir[0]) {
+        printf("  SKIP: CRISPEMBED_MODELS_DIR not set\n");
+        return;
+    }
+
+    std::string det_path = std::string(models_dir) + "/dbnet-ic15-q8_0.gguf";
+    std::string tess_path = std::string(models_dir) + "/tesseract-eng-q8_0.gguf";
+
+    // Check if models exist
+    FILE * f1 = fopen(det_path.c_str(), "r");
+    FILE * f2 = fopen(tess_path.c_str(), "r");
+    if (!f1 || !f2) {
+        if (f1) fclose(f1);
+        if (f2) fclose(f2);
+        printf("  SKIP: tesseract models not found at %s\n", models_dir);
+        return;
+    }
+    fclose(f1);
+    fclose(f2);
+
+    using namespace ocr_orchestrator;
+
+    // Build a tesseract-only pipeline
+    config cfg;
+    cfg.router = false;
+    chain ch;
+    ch.type = source_type::auto_detect;
+    stage s;
+    s.eng = engine::tesseract;
+    s.model_a = det_path;
+    s.model_b = tess_path;
+    s.accept.min_chars = 1;
+    s.accept.min_confidence = 0.0f;
+    ch.stages.push_back(s);
+    cfg.chains.push_back(ch);
+
+    context * ctx = nullptr;
+    if (!load(&ctx, cfg)) {
+        printf("  SKIP: failed to load tesseract pipeline\n");
+        return;
+    }
+
+    // Create a test image with large text (black on white, 400x60)
+    // Use a simple block-letter pattern
+    std::vector<uint8_t> img(400 * 60 * 3, 255);
+    // Draw a simple "T" shape
+    for (int y = 5; y < 15; y++)
+        for (int x = 20; x < 80; x++)
+            for (int c = 0; c < 3; c++) img[(y * 400 + x) * 3 + c] = 0;
+    for (int y = 15; y < 50; y++)
+        for (int x = 45; x < 55; x++)
+            for (int c = 0; c < 3; c++) img[(y * 400 + x) * 3 + c] = 0;
+    std::string path = write_temp(img, 400, 60, 3, "tess_regr");
+
+    result r = run_file(ctx, path.c_str());
+    CHECK(r.stages_tried == 1, "tesseract stage ran");
+    // Don't assert on text content — just verify no crash and non-negative confidence
+    CHECK(r.mean_confidence >= 0.0f, "tesseract confidence >= 0");
+    printf("  INFO: tesseract output: \"%s\" (conf=%.2f)\n", r.full_text.c_str(), r.mean_confidence);
+
+    free(ctx);
+}
+
+// Same path as the production Fraktur profile, but opt-in because the large
+// detector/recognizer artifacts are kept outside the repository.
+static void test_tesseract_fraktur_regression() {
+    printf("── tesseract Fraktur regression (model-gated) ──\n");
+    const char * det_env = getenv("CRISPEMBED_FRAKTUR_DET_MODEL");
+    const char * rec_env = getenv("CRISPEMBED_FRAKTUR_MODEL");
+    const char * image_env = getenv("CRISPEMBED_FRAKTUR_IMAGE");
+    if (!det_env || !rec_env || !image_env || !det_env[0] || !rec_env[0] || !image_env[0]) {
+        printf("  SKIP: CRISPEMBED_FRAKTUR_{DET_MODEL,MODEL,IMAGE} not set\n");
+        return;
+    }
+    FILE * f1 = fopen(det_env, "r");
+    FILE * f2 = fopen(rec_env, "r");
+    FILE * f3 = fopen(image_env, "r");
+    if (!f1 || !f2 || !f3) {
+        if (f1) fclose(f1);
+        if (f2) fclose(f2);
+        if (f3) fclose(f3);
+        printf("  SKIP: Fraktur fixture or model not found\n");
+        return;
+    }
+    fclose(f1);
+    fclose(f2);
+    fclose(f3);
+
+    using namespace ocr_orchestrator;
+    config cfg;
+    cfg.router = false;
+    chain ch;
+    ch.type = source_type::auto_detect;
+    stage s = tesseract_fraktur_stage();
+    s.model_a = det_env;
+    s.model_b = rec_env;
+    ch.stages.push_back(s);
+    cfg.chains.push_back(ch);
+    context * ctx = nullptr;
+    if (!load(&ctx, cfg)) {
+        printf("  SKIP: failed to load Fraktur pipeline\n");
+        return;
+    }
+    result r = run_file(ctx, image_env);
+    CHECK(!r.regions.empty(), "Fraktur pipeline detects at least one line");
+    CHECK(r.regions.size() < 40, "Fraktur DBNet fragments are grouped into line regions");
+    CHECK(!r.full_text.empty(), "Fraktur pipeline returns text");
+    const float elapsed_ms = r.stage_metrics.empty() ? 0.0f : r.stage_metrics.back().elapsed_ms;
+    printf("  INFO: regions=%zu chars=%zu confidence=%.3f stage_ms=%.1f\n", r.regions.size(), r.full_text.size(),
+           r.mean_confidence, elapsed_ms);
+    if (getenv("CRISPEMBED_FRAKTUR_DUMP")) {
+        printf("  BEGIN native Fraktur full_text\n%s\n  END native Fraktur full_text\n", r.full_text.c_str());
+    }
+    ocr_orchestrator::free(ctx);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 9b. Model-dependent: PP-OCRv6 detector → orientation → recognizer (gated)
+// ═══════════════════════════════════════════════════════════════════════
+static void test_ppocrv6_pipeline_regression() {
+    const char * variant_env = getenv("CRISPEMBED_PPOCRV6_VARIANT");
+    const std::string variant = variant_env && variant_env[0] ? variant_env : "tiny";
+    if (variant != "tiny" && variant != "small" && variant != "medium") {
+        printf("  SKIP: unsupported PP-OCRv6 variant: %s\n", variant.c_str());
+        return;
+    }
+    printf("── PP-OCRv6 %s pipeline regression (model-gated) ──\n", variant.c_str());
+
+    const char * models_dir = getenv("CRISPEMBED_MODELS_DIR");
+    if (!models_dir || !models_dir[0]) {
+        printf("  SKIP: CRISPEMBED_MODELS_DIR not set\n");
+        return;
+    }
+
+    const std::string prefix = std::string(models_dir) + "/PP-OCRv6_" + variant;
+    const std::string det_path = prefix + "_det-f16.gguf";
+    const std::string rec_path = prefix + "_rec-q8-head.gguf";
+    const std::string ori_path = std::string(models_dir) + "/PP-LCNet_x1_0_textline_ori-f16.gguf";
+    const char * image_path = "tests/regression/images/cc0/german_official_document.jpg";
+    FILE * det = fopen(det_path.c_str(), "r");
+    FILE * rec = fopen(rec_path.c_str(), "r");
+    FILE * ori = fopen(ori_path.c_str(), "r");
+    if (!det || !rec || !ori) {
+        if (det) fclose(det);
+        if (rec) fclose(rec);
+        if (ori) fclose(ori);
+        printf("  SKIP: PP-OCRv6 %s/orientation models not found in %s\n", variant.c_str(), models_dir);
+        return;
+    }
+    fclose(det);
+    fclose(rec);
+    fclose(ori);
+
+    using namespace ocr_orchestrator;
+    config cfg;
+    cfg.router = false;
+    chain ch;
+    ch.type = source_type::auto_detect;
+    stage s;
+    s.eng = engine::ppocrv6;
+    s.model_a = det_path;
+    s.model_b = rec_path;
+    s.model_c = ori_path;
+    s.accept.min_chars = 1;
+    s.accept.min_confidence = 0.0f;
+    ch.stages.push_back(s);
+    cfg.chains.push_back(ch);
+
+    context * ctx = nullptr;
+    if (!load(&ctx, cfg)) {
+        printf("  SKIP: failed to load PP-OCRv6 pipeline\n");
+        return;
+    }
+    const char * fixtures[] = {
+        image_path,
+        "tests/regression/images/derived/german_official_document__skew-p04.png",
+        "tests/regression/images/derived/german_official_document__low-dpi.png",
+        "tests/regression/images/derived/german_official_document__rot180.png",
+        "tests/regression/images/derived/german_official_document__perspective.png",
+        "tests/regression/images/derived/german_official_document__mixed-orientation.png",
+        "tests/regression/images/cc0/receipt_example.png",
+        "tests/regression/images/derived/receipt_example__rot90.png",
+        "tests/regression/images/cc0/arabic_printed_line.png",
+        "tests/regression/images/derived/arabic_printed_line__mixed-orientation.png",
+    };
+    int fixture_start = 0;
+    if (const char * start_env = getenv("CRISPEMBED_PPOCRV6_FIXTURE_START")) {
+        const int parsed = atoi(start_env);
+        if (parsed >= 0 && parsed < 10) fixture_start = parsed;
+    }
+    int fixture_limit = 10 - fixture_start;
+    if (const char * limit_env = getenv("CRISPEMBED_PPOCRV6_FIXTURE_LIMIT")) {
+        const int parsed = atoi(limit_env);
+        if (parsed > 0 && parsed < fixture_limit) fixture_limit = parsed;
+    }
+    int cases = 0;
+    int total_regions = 0;
+    for (int fixture_index = fixture_start; fixture_index < fixture_start + fixture_limit; ++fixture_index) {
+        const char * fixture = fixtures[fixture_index];
+        FILE * input = fopen(fixture, "r");
+        if (!input) {
+            printf("  SKIP: fixture not found: %s\n", fixture);
+            continue;
+        }
+        fclose(input);
+        const auto started = std::chrono::steady_clock::now();
+        result r = run_file(ctx, fixture);
+        const double elapsed_ms =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+        cases++;
+        total_regions += (int)r.regions.size();
+        CHECK(r.stages_tried == 1, "PP-OCRv6 detector/orientation/recognizer stage ran");
+        CHECK(r.mean_confidence >= 0.0f, "PP-OCRv6 pipeline confidence >= 0");
+        for (const auto & region : r.regions) {
+            CHECK(region.orientation_angle == 0 || region.orientation_angle == 180,
+                  "PP-OCRv6 line orientation is 0° or 180°");
+            CHECK(region.orientation_confidence >= 0.0f && region.orientation_confidence <= 1.0f,
+                  "PP-OCRv6 line orientation confidence is bounded");
+        }
+        printf("  INFO: %s: %zu regions, %d chars (conf=%.2f, time_ms=%.1f)\n", fixture, r.regions.size(),
+               (int)r.full_text.size(), r.mean_confidence, elapsed_ms);
+    }
+    CHECK(cases == fixture_limit, "PP-OCRv6 live corpus fixtures ran");
+    CHECK(total_regions > 0, "PP-OCRv6 live corpus produced regions");
+    free(ctx);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 10. Model-dependent: Punctuation post-process (gated)
+// ═══════════════════════════════════════════════════════════════════════
+static void test_punctuation() {
+    printf("── punctuation (model-gated) ──\n");
+
+    const char * models_dir = getenv("CRISPEMBED_MODELS_DIR");
+    if (!models_dir || !models_dir[0]) {
+        printf("  SKIP: CRISPEMBED_MODELS_DIR not set\n");
+        return;
+    }
+
+    std::string punct_path = std::string(models_dir) + "/fireredpunc-q8_0.gguf";
+    FILE * f = fopen(punct_path.c_str(), "r");
+    if (!f) {
+        printf("  SKIP: punct model not found at %s\n", punct_path.c_str());
+        return;
+    }
+    fclose(f);
+
+    // Test the C API directly
+    void * pctx = crispembed_punct_init(punct_path.c_str(), 4);
+    if (!pctx) {
+        printf("  SKIP: failed to load punct model\n");
+        return;
+    }
+
+    const char * input = "hello world this is a test";
+    const char * output = crispembed_punct_process(pctx, input);
+    CHECK(output != nullptr, "punct process returns non-null");
+    if (output) {
+        // Punctuation model should add at least some capitalization or punctuation
+        bool changed = strcmp(input, output) != 0;
+        printf("  INFO: \"%s\" → \"%s\"\n", input, output);
+        CHECK(changed, "punct model modifies input");
+    }
+
+    // NULL model → punct_process with NULL context
+    // (already tested by the pipeline when punct_model is NULL)
+
+    crispembed_punct_free(pctx);
+}
+
+static int crispembed_test_main() {
+    test_default_config();
+    test_fraktur_stage_profile();
+    test_structured_capability_validation();
+    test_classifier();
+    test_tesseract_pageseg_geometry();
+    test_accept_gate();
+    test_multi_stage();
+    test_per_stage_config();
+    test_chain_selection();
+    test_c_api();
+    test_edge_cases();
+    test_tesseract_regression();
+    test_tesseract_fraktur_regression();
+    test_ppocrv6_pipeline_regression();
+    test_punctuation();
+
+    printf("\n%d passed, %d failed\n", n_pass, n_fail);
+    return n_fail == 0 ? 0 : 1;
+}
+
+int main() {
+    core_util::clean_exit(crispembed_test_main());
+}

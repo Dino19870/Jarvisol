@@ -1,0 +1,37 @@
+# Test runner config.
+#
+# Slow tests are tagged 'slow' (per-`test()` annotations) AND each one
+# guards itself with a `skip:` clause that fires when its
+# `CRISPASR_TEST_<BACKEND>_MODEL` env var isn't set. So:
+#
+#   flutter test                               # default — slow tests
+#                                              # skip themselves silently
+#                                              # (no env vars → no work)
+#   flutter test --exclude-tags slow           # never run slow tests
+#                                              # (even when env vars set)
+#   flutter test --tags slow                   # ONLY slow tests
+#                                              # (still skip if no env)
+#
+# We don't set `exclude_tags: slow` in this config because that
+# conflicts with CLI `--tags slow` (intersection becomes empty), and
+# it isn't needed — the per-test skip clauses already keep the default
+# pass fast.
+
+tags:
+  slow:
+    description: >
+      End-to-end synth/transcribe roundtrips that load gigabyte GGUFs
+      and run minutes of LLM decode. Skips itself silently unless the
+      matching `CRISPASR_TEST_<BACKEND>_MODEL` env var is set.
+  live:
+    description: >
+      Live network calls against an external API (BYOK cloud LLM
+      cleanup, §5.1.6 v2). Same per-test opt-in pattern as `slow`:
+      each test guards itself with a `markTestSkipped` clause that
+      fires when `RUN_LIVE_TESTS` isn't set, so a default `flutter
+      test` invocation stays offline even if a key happens to be in
+      the shell env. Run explicitly with:
+        RUN_LIVE_TESTS=1 GROQ_API_KEY=… flutter test --tags=live
+      or:
+        RUN_LIVE_TESTS=1 CRISPER_WEAVER_DOTENV=$HOME/code/.env \
+          flutter test --tags=live

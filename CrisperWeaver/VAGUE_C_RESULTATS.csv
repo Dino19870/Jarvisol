@@ -1,0 +1,22 @@
+Lot,Identifiant,Nature,Description,Statut,Details
+CORR-08,AUD-CHAT-01,Audit,Neutralisation des logs de diagnostic intrusifs dans le chat documentaire (TNR-004 / TNR-145),PASS,Suppression de l'affichage du texte utilisateur et des extraits de prompt dans la console; seule la longueur est journalisee; flux LLM preserve.
+CORR-08,TNR-004,TNR,Non-regression chat documentaire sans fuite de prompt ni texte en clair,PASS,Audit de confidentialite valide bit-a-bit sur document_chat_widget.dart.
+CORR-08,TNR-145,TNR,Transmission fidele et integree du message utilisateur au moteur d'inference,PASS,"Aucune troncature du message reel, payload transmis integralement au LLM."
+CORR-08,AUD-CLEAN-01,Audit,Gestion explicite d'echec total du nettoyage LLM Cloud (TNR-086),PASS,Levee explicite de CloudLlmTotalFailureException en cas de panne globale provider; conservation des textes bruts originaux; notification UI non trompeuse.
+CORR-08,TNR-086,TNR,Contrat de panne totale du service de nettoyage LLM Cloud,PASS,14/14 tests unitaires passes avec succes sur cloud_llm_cleanup_service_test.dart.
+CORR-08,AUD-BRAND-01,Audit,Alignement du branding Jarvisol dans l'interface utilisateur (TNR-142 / TNR-146 / TNR-147),PASS,Remplacement des occurrences visibles CrisperWeaver par Jarvisol dans about_screen.dart et settings_screen.dart tout en preservant jarvisol.exe et l'icone finale.
+CORR-08,TNR-142,TNR,Nom de l'application homogene dans la barre d'en-tete et la boite A Propos,PASS,applicationName et titre declares conformement sous le libelle canonique Jarvisol.
+CORR-08,TNR-146,TNR,Concordance du nom de l'application dans les parametres,PASS,Entree A Propos harmonisee avec le nom Jarvisol.
+CORR-08,TNR-147,TNR,Preservation du binaire jarvisol.exe et du processus Win32,PASS,"jarvisol.exe compile et verifie, titre de fenetre Win32 'Jarvisol', icone applicative intacte."
+CORR-09,TNR-025,TNR,Packaging autonome MCP Gmail sans Node hote ni npm (CORR-09 Partie A),PASS,runtime/node embarque dans Release avec 148 paquets node_modules pre-installes; registre npm bloque; 0 cle utilisateur incluse.
+CORR-09,TNR-070,TNR,Packaging autonome LiteRT Python runtime (CORR-09 Partie A),PASS,runtime/litert_lm complet (Python 3.11 + packages litert-lm 0.16.0) bundle dans Release; 330.5 Mo autonomes.
+CORR-09,TNR-136,TNR,Packaging autonome Web Media (CORR-09 Partie A),PASS,"runtime/web_media contenant yt-dlp.exe, ffmpeg.exe et deno.exe integre dans la distribution Release."
+CORR-09,TNR-058,TNR,Bundle source reproductible et compilation isolee autonome (CORR-09 Partie B),PASS,"Archive ZIP jarvisol_source_bundle_vague_c.zip generee avec CrisperWeaver, CrispASR, CrispEmbed, glint; pub get et analyse verifies avec succes dans sandbox isolee."
+CANARY,TNR-027,TNR,Mise a jour yt-dlp transactionnelle securisee,PASS,"Suite de tests d'injection de fautes validee 8/8 : rejet payload <1Mo, rejet binaire corrompu, rejet mismatch SHA-256."
+CANARY,TNR-076,TNR,Runner securise playlists et commentaires Web Media,PASS,Processus isole valide : gestion propre exit code 1 et capture complete des erreurs sans crash.
+CANARY,TNR-071,TNR,Validation taille et integrite modele LiteRT,PASS,Protection verification stricte de taille et CLI import; rejet sans faux succes.
+CANARY,TNR-001,TNR,Inpainting image nominal,PASS,Rejeu canary valide bit-a-bit.
+CANARY,TNR-002,TNR,Format PNG nominal,PASS,Magic number et structure IHDR valides.
+CANARY,TNR-016,TNR,Auto-memory au seuil 10,PASS,Compteur modulaire verifie.
+CANARY,TNR-019,TNR,Snapshot avant Tout vider,PASS,Snapshot immuable cree avant effacement.
+CANARY,TNR-130,TNR,Resilience et portabilite des preferences,PASS,Confinement strict dans dataDir portable sans ecriture externe.
