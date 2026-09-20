@@ -52,9 +52,31 @@ Ce guide répertorie l'emplacement attendu, le rôle, le statut (obligatoire ou 
 
 ---
 
-## 6. Image Generation — Stable Diffusion
+## 6. Image Generation & Editing — Stable Diffusion / DiT / IP-Adapter
 
-- **ROLE** : Génération d'images locale accélérée par GPU Vulkan / DirectML.
-- **OPTIONAL_OR_REQUIRED** : Optionnel.
-- **EXPECTED_DIRECTORY** : `models/` dans le dossier de `sd_server`.
-- **CATALOG_OR_INSTALL_METHOD** : Fichiers `.safetensors` de modèles Stable Diffusion (SD 1.5, DreamShaper, etc.).
+- **ROLE** : Génération d'images haute résolution (Text-to-Image), inpainting/retouche de zones masquées, composition multi-images avec conservation d'identité ou d'objet (IP-Adapter), et détection automatique de visage (ADetailer YOLOv8).
+- **OPTIONAL_OR_REQUIRED** : Optionnel (requis uniquement pour le studio d'images et la retouche visuelle).
+- **EXPECTED_DIRECTORY** :
+  - Modèles et encodeurs : `models/Stable-diffusion/`
+  - Encodeur visuel IP-Adapter : `models/image_conditioning/clip_vision/`
+  - Adaptateurs d'image : `models/image_conditioning/ip_adapter/`
+  - Détecteurs de visage : `models/image_conditioning/detectors/`
+- **GUIDE COMPLET ET MANIFESTE DÉTAILLÉ** :
+  - Consultez le document dédié : [Guide d'Installation des Modèles d'Images](IMAGE_MODELS_SETUP.md)
+  - Manifeste machine-readable : [image_models_manifest.json](image_models_manifest.json)
+- **CATALOG_OR_INSTALL_METHOD** :
+  Téléchargement automatisé et sécurisé par empreintes SHA-256 via le script PowerShell :
+  ```powershell
+  # Lister les packs disponibles
+  .\scripts\download_image_models.ps1 -List
+
+  # Télécharger le pack Auto Face & Multi-Image (4.85 Go)
+  .\scripts\download_image_models.ps1 -Pack IMAGE_AUTO_FACE
+
+  # Télécharger le pack Text-to-Image rapide Chroma Flash (7.94 Go)
+  .\scripts\download_image_models.ps1 -Pack IMAGE_BASIC
+  ```
+- **Packs recommandés** :
+  - Génération rapide (DiT) : `IMAGE_BASIC` (`chroma-unlocked-v46-flash-Q4_0.gguf` + `ae.safetensors` + `t5xxl_q4_k.gguf`).
+  - Retouche & Multi-Image SD 1.5 : `IMAGE_AUTO_FACE` (`Realistic_Vision_V6.0_NV_B1_inpainting_fp16.safetensors`, `clip_vision_vit_h.safetensors`, `ip-adapter-plus_sd15.safetensors`, `ip-adapter-plus-face_sd15.safetensors`, `face_yolov8n.safetensors`).
+

@@ -182,8 +182,28 @@ pwsh scripts/build_windows.ps1 release
 Jarvisol fonctionne sans connexion Internet grâce à des modèles locaux.
 Pour éviter de saturer le dépôt GitHub, aucun modèle volumineux n'est versionné.
 
+### 9.1 Modèles Audio & Langage (Whisper, TTS, Embeddings, LLM)
 - **Option automatique (Recommandée)** : Lancez l'application et ouvrez l'écran **Gestion des Modèles**. Cliquez sur *Télécharger* en face du modèle désiré.
-- **Option manuelle** : Consultez le guide [docs/MODEL_SETUP.md](docs/MODEL_SETUP.md) pour connaître les répertoires cibles et les liens HuggingFace de chaque modèle.
+- **Option manuelle** : Consultez le guide général [docs/MODEL_SETUP.md](docs/MODEL_SETUP.md) pour connaître les répertoires cibles et les liens de chaque modèle.
+
+### 9.2 Modèles d'Images & Retouche (Text-to-Image, Inpainting, IP-Adapter, Auto Face)
+Le sous-système de génération et d'édition d'images utilise des modèles dédiés (`models/Stable-diffusion/` et `models/image_conditioning/`).
+- **Guide complet & compatibilité** : Consultez [docs/IMAGE_MODELS_SETUP.md](docs/IMAGE_MODELS_SETUP.md) et le manifeste [docs/image_models_manifest.json](docs/image_models_manifest.json).
+- **Téléchargement automatisé en 1 commande** :
+  ```powershell
+  # Afficher la liste des packs et modèles avec leur état local
+  .\scripts\download_image_models.ps1 -List
+
+  # Pack 1 : Génération rapide Text-to-Image Chroma Flash DiT (~7.94 Go)
+  .\scripts\download_image_models.ps1 -Pack IMAGE_BASIC
+
+  # Pack 2 : Retouche Inpainting simple SD 1.5 (~2.30 Go)
+  .\scripts\download_image_models.ps1 -Pack IMAGE_INPAINT
+
+  # Pack 3 : Composition Multi-Images & Transfert de Visage/Objet SD 1.5 (~4.85 Go)
+  .\scripts\download_image_models.ps1 -Pack IMAGE_AUTO_FACE
+  ```
+  *Chaque fichier téléchargé est automatiquement validé par son empreinte cryptographique SHA-256 avant promotion.*
 
 ---
 

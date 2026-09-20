@@ -1,0 +1,331 @@
+{
+  "schema_version": "1.0.0",
+  "generated_date": "2026-09-20",
+  "description": "Jarvisol Image Models Manifest - Official SHA-256 and URLs for reproducible setup",
+  "packs": {
+    "IMAGE_BASIC": {
+      "name": "IMAGE_BASIC",
+      "description": "Fast Text-to-Image Generation (Chroma Flash DiT + shared AE + T5-XXL text encoder)",
+      "total_size_bytes": 8520202564,
+      "total_size_human": "7.94 GB",
+      "files": [
+        "models/Stable-diffusion/chroma-unlocked-v46-flash-Q4_0.gguf",
+        "models/Stable-diffusion/ae.safetensors",
+        "models/Stable-diffusion/t5xxl_q4_k.gguf"
+      ]
+    },
+    "IMAGE_INPAINT": {
+      "name": "IMAGE_INPAINT",
+      "description": "Standard Inpainting (Realistic Vision V6.0 FP16 + VAE SD 1.5)",
+      "total_size_bytes": 2471547540,
+      "total_size_human": "2.30 GB",
+      "files": [
+        "models/Stable-diffusion/Realistic_Vision_V6.0_NV_B1_inpainting_fp16.safetensors",
+        "models/Stable-diffusion/vae-ft-mse-840000-ema-pruned.safetensors"
+      ]
+    },
+    "IMAGE_MULTI_SD15": {
+      "name": "IMAGE_MULTI_SD15",
+      "description": "Multi-Image Composition & IP-Adapter Reference (General Reference & Face Reference)",
+      "total_size_bytes": 5196287564,
+      "total_size_human": "4.84 GB",
+      "files": [
+        "models/Stable-diffusion/Realistic_Vision_V6.0_NV_B1_inpainting_fp16.safetensors",
+        "models/Stable-diffusion/vae-ft-mse-840000-ema-pruned.safetensors",
+        "models/image_conditioning/clip_vision/clip_vision_vit_h.safetensors",
+        "models/image_conditioning/ip_adapter/ip-adapter-plus_sd15.safetensors",
+        "models/image_conditioning/ip_adapter/ip-adapter-plus-face_sd15.safetensors"
+      ]
+    },
+    "IMAGE_AUTO_FACE": {
+      "name": "IMAGE_AUTO_FACE",
+      "description": "Auto Face Detection & Retouching (ADetailer YOLOv8 Nano + IP-Adapter Face + SD 1.5 Inpaint)",
+      "total_size_bytes": 5202321544,
+      "total_size_human": "4.85 GB",
+      "files": [
+        "models/Stable-diffusion/Realistic_Vision_V6.0_NV_B1_inpainting_fp16.safetensors",
+        "models/Stable-diffusion/vae-ft-mse-840000-ema-pruned.safetensors",
+        "models/image_conditioning/clip_vision/clip_vision_vit_h.safetensors",
+        "models/image_conditioning/ip_adapter/ip-adapter-plus_sd15.safetensors",
+        "models/image_conditioning/ip_adapter/ip-adapter-plus-face_sd15.safetensors",
+        "models/image_conditioning/detectors/face_yolov8n.safetensors"
+      ]
+    },
+    "IMAGE_FULL": {
+      "name": "IMAGE_FULL",
+      "description": "Full Image Suite (All 19 canonical production assets: SDXL, Pony, Flux, SD3.5, Chroma, Inpainting & Conditioning)",
+      "total_size_bytes": 76013115702,
+      "total_size_human": "70.79 GB",
+      "files": [
+        "models/Stable-diffusion/chroma-unlocked-v46-flash-Q4_0.gguf",
+        "models/Stable-diffusion/ae.safetensors",
+        "models/Stable-diffusion/t5xxl_q4_k.gguf",
+        "models/Stable-diffusion/clip_l.safetensors",
+        "models/Stable-diffusion/clip_g.safetensors",
+        "models/Stable-diffusion/flux1-schnell-Q4_K_S.gguf",
+        "models/Stable-diffusion/sd3.5_large_turbo-q4_0.gguf",
+        "models/Stable-diffusion/dreamshaperXL_lightningDPMSDE.safetensors",
+        "models/Stable-diffusion/realvisxlV50_v50LightningBakedvae.safetensors",
+        "models/Stable-diffusion/juggernautXL_ragnarok.safetensors",
+        "models/Stable-diffusion/CyberRealisticPony_V18.0_F16.safetensors",
+        "models/Stable-diffusion/Realistic_Vision_V6.0_NV_B1_inpainting_fp16.safetensors",
+        "models/Stable-diffusion/Realistic_Vision_V6.0_NV_B1_inpainting.safetensors",
+        "models/Stable-diffusion/stable-diffusion-v1-5-inpainting-Q4_0.gguf",
+        "models/Stable-diffusion/vae-ft-mse-840000-ema-pruned.safetensors",
+        "models/image_conditioning/clip_vision/clip_vision_vit_h.safetensors",
+        "models/image_conditioning/ip_adapter/ip-adapter-plus_sd15.safetensors",
+        "models/image_conditioning/ip_adapter/ip-adapter-plus-face_sd15.safetensors",
+        "models/image_conditioning/detectors/face_yolov8n.safetensors"
+      ]
+    }
+  },
+  "models": [
+    {
+      "id": "chroma-unlocked-v46-flash-Q4_0",
+      "filename": "chroma-unlocked-v46-flash-Q4_0.gguf",
+      "relative_path": "models/Stable-diffusion/chroma-unlocked-v46-flash-Q4_0.gguf",
+      "category": "TEXT2IMG",
+      "architecture": "CHROMA_DIT",
+      "size_bytes": 5432053920,
+      "sha256": "3B114C0B32145C3E725BA72B571FC0641748672EDA789596E882DB24FB77AD16",
+      "download_url": "https://huggingface.co/silveroxides/Chroma-GGUF/resolve/main/chroma-unlocked-v46-flash/chroma-unlocked-v46-flash-Q4_0.gguf",
+      "license": "Apache-2.0",
+      "license_url": "https://huggingface.co/silveroxides/Chroma-GGUF",
+      "description": "Chroma Flash DiT quantized Q4_0 (high-speed 8-step generation)"
+    },
+    {
+      "id": "ae",
+      "filename": "ae.safetensors",
+      "relative_path": "models/Stable-diffusion/ae.safetensors",
+      "category": "VAE",
+      "architecture": "FLUX_CHROMA_VAE",
+      "size_bytes": 335304388,
+      "sha256": "AFC8E28272CD15DB3919BACDB6918CE9C1ED22E96CB12C4D5ED0FBA823529E38",
+      "download_url": "https://huggingface.co/receptektas/black-forest-labs-ae_safetensors/resolve/main/ae.safetensors",
+      "license": "Apache-2.0",
+      "license_url": "https://huggingface.co/black-forest-labs/FLUX.1-schnell",
+      "description": "Autoencoder VAE for Chroma, FLUX.1 and SD3.5 architectures"
+    },
+    {
+      "id": "t5xxl_q4_k",
+      "filename": "t5xxl_q4_k.gguf",
+      "relative_path": "models/Stable-diffusion/t5xxl_q4_k.gguf",
+      "category": "TEXT_ENCODER",
+      "architecture": "T5XXL",
+      "size_bytes": 2752844256,
+      "sha256": "B235E9A108CCC1803C576464E937CF5EC4D8EB34D83776E5199450400D4E0BCB",
+      "download_url": "https://huggingface.co/Green-Sky/flux.1-schnell-GGUF/resolve/main/t5xxl_q4_k.gguf",
+      "license": "Apache-2.0",
+      "license_url": "https://huggingface.co/google/t5-v1_1-xxl",
+      "description": "T5-XXL text encoder quantized Q4_K for Chroma, FLUX.1 and SD3.5"
+    },
+    {
+      "id": "clip_l",
+      "filename": "clip_l.safetensors",
+      "relative_path": "models/Stable-diffusion/clip_l.safetensors",
+      "category": "TEXT_ENCODER",
+      "architecture": "CLIP_L",
+      "size_bytes": 246144152,
+      "sha256": "660C6F5B1ABAE9DC498AC2D21E1347D2ABDB0CF6C0C0C8576CD796491D9A6CDD",
+      "download_url": "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/clip_l.safetensors",
+      "license": "MIT",
+      "license_url": "https://huggingface.co/openai/clip-vit-large-patch14",
+      "description": "CLIP-L text encoder for FLUX.1 and SD3.5"
+    },
+    {
+      "id": "clip_g",
+      "filename": "clip_g.safetensors",
+      "relative_path": "models/Stable-diffusion/clip_g.safetensors",
+      "category": "TEXT_ENCODER",
+      "architecture": "CLIP_G",
+      "size_bytes": 1389382176,
+      "sha256": "EC310DF2AF79C318E24D20511B601A591CA8CD4F1FCE1D8DFF822A356BCDB1F4",
+      "download_url": "https://huggingface.co/Comfy-Org/stable-diffusion-3.5-fp8/resolve/main/text_encoders/clip_g.safetensors",
+      "license": "Stability AI Community License",
+      "license_url": "https://huggingface.co/stabilityai/stable-diffusion-3.5-large-turbo",
+      "description": "CLIP-G text encoder for SD 3.5 Large Turbo"
+    },
+    {
+      "id": "flux1-schnell-Q4_K_S",
+      "filename": "flux1-schnell-Q4_K_S.gguf",
+      "relative_path": "models/Stable-diffusion/flux1-schnell-Q4_K_S.gguf",
+      "category": "TEXT2IMG",
+      "architecture": "FLUX_DIT",
+      "size_bytes": 6783943712,
+      "sha256": "4FD16477B3A5296D0CF722C4B92A9FD7F30D09AC7495826E4465D8DE9C9FD973",
+      "download_url": "https://huggingface.co/city96/FLUX.1-schnell-gguf/resolve/main/flux1-schnell-Q4_K_S.gguf",
+      "license": "Apache-2.0",
+      "license_url": "https://huggingface.co/black-forest-labs/FLUX.1-schnell",
+      "description": "FLUX.1 Schnell DiT quantized Q4_K_S (high-speed 4-step generation)"
+    },
+    {
+      "id": "sd3.5_large_turbo-q4_0",
+      "filename": "sd3.5_large_turbo-q4_0.gguf",
+      "relative_path": "models/Stable-diffusion/sd3.5_large_turbo-q4_0.gguf",
+      "category": "TEXT2IMG",
+      "architecture": "SD35_DIT",
+      "size_bytes": 4772054752,
+      "sha256": "5F924F492535FFAEC48359B7FE6E1A621EED16FB8DE4E1B408132D90B1039382",
+      "download_url": "https://huggingface.co/calcuis/sd3.5-large-turbo/resolve/main/sd3.5_large_turbo-q4_0.gguf",
+      "license": "Stability AI Community License",
+      "license_url": "https://huggingface.co/stabilityai/stable-diffusion-3.5-large-turbo",
+      "description": "Stable Diffusion 3.5 Large Turbo quantized Q4_0"
+    },
+    {
+      "id": "dreamshaperXL_lightningDPMSDE",
+      "filename": "dreamshaperXL_lightningDPMSDE.safetensors",
+      "relative_path": "models/Stable-diffusion/dreamshaperXL_lightningDPMSDE.safetensors",
+      "category": "TEXT2IMG",
+      "architecture": "SDXL",
+      "size_bytes": 6939220250,
+      "sha256": "FDBE56354B8F876B736F24D3AD867ECD4140C019F57642EC8DDD878088D44F64",
+      "download_url": "https://civitai.com/api/download/models/354657",
+      "license": "Permissive / Civitai Community",
+      "license_url": "https://civitai.com/models/112902/dreamshaper-xl",
+      "description": "DreamShaper XL Lightning DPM SDE checkpoint"
+    },
+    {
+      "id": "realvisxlV50_v50LightningBakedvae",
+      "filename": "realvisxlV50_v50LightningBakedvae.safetensors",
+      "relative_path": "models/Stable-diffusion/realvisxlV50_v50LightningBakedvae.safetensors",
+      "category": "TEXT2IMG",
+      "architecture": "SDXL",
+      "size_bytes": 6938065512,
+      "sha256": "FABCADD9330DCC4F9702063428D40B9D4D07168D8ACEFC819B8D1D9DB466B3EC",
+      "download_url": "https://civitai.com/api/download/models/361593",
+      "license": "Permissive / Civitai Community",
+      "license_url": "https://civitai.com/models/139562/realvisxl-v50",
+      "description": "RealVisXL V5.0 Lightning Baked VAE checkpoint"
+    },
+    {
+      "id": "juggernautXL_ragnarok",
+      "filename": "juggernautXL_ragnarok.safetensors",
+      "relative_path": "models/Stable-diffusion/juggernautXL_ragnarok.safetensors",
+      "category": "TEXT2IMG",
+      "architecture": "SDXL",
+      "size_bytes": 7105350162,
+      "sha256": "DD08FA32F98D05A2443CA1419E46DF1575A0811F6E3B246D9DD47FF20F5EB66A",
+      "download_url": "https://civitai.com/api/download/models/782002",
+      "license": "Permissive / Civitai Community",
+      "license_url": "https://civitai.com/models/133005/juggernaut-xl",
+      "description": "Juggernaut XL Ragnarok V9 checkpoint"
+    },
+    {
+      "id": "CyberRealisticPony_V18.0_F16",
+      "filename": "CyberRealisticPony_V18.0_F16.safetensors",
+      "relative_path": "models/Stable-diffusion/CyberRealisticPony_V18.0_F16.safetensors",
+      "category": "TEXT2IMG",
+      "architecture": "SDXL_PONY",
+      "size_bytes": 6938041288,
+      "sha256": "1D580C1C3F3612FA4DB88AF65372255582D5509CA0B28F85387273368301941B",
+      "download_url": "https://civitai.com/api/download/models/482329",
+      "license": "Permissive / Civitai Community",
+      "license_url": "https://civitai.com/models/432936/cyberrealistic-pony",
+      "description": "CyberRealistic Pony V18.0 FP16 checkpoint"
+    },
+    {
+      "id": "Realistic_Vision_V6.0_NV_B1_inpainting_fp16",
+      "filename": "Realistic_Vision_V6.0_NV_B1_inpainting_fp16.safetensors",
+      "relative_path": "models/Stable-diffusion/Realistic_Vision_V6.0_NV_B1_inpainting_fp16.safetensors",
+      "category": "INPAINT",
+      "architecture": "SD15_INPAINT",
+      "size_bytes": 2136906350,
+      "sha256": "D939CBDBCE19A9D8837794ACD06EF8DB1AD4A2F2BCF1418432D897EAC98F1AFD",
+      "download_url": "https://huggingface.co/SG161222/Realistic_Vision_V6.0_B1_noVAE/resolve/main/Realistic_Vision_V6.0_NV_B1_inpainting_fp16.safetensors",
+      "license": "CreativeML OpenRAIL-M",
+      "license_url": "https://huggingface.co/SG161222/Realistic_Vision_V6.0_B1_noVAE",
+      "description": "Realistic Vision V6.0 B1 Inpainting model (FP16, primary inpainting checkpoint for IP-Adapter)"
+    },
+    {
+      "id": "Realistic_Vision_V6.0_NV_B1_inpainting",
+      "filename": "Realistic_Vision_V6.0_NV_B1_inpainting.safetensors",
+      "relative_path": "models/Stable-diffusion/Realistic_Vision_V6.0_NV_B1_inpainting.safetensors",
+      "category": "INPAINT",
+      "architecture": "SD15_INPAINT",
+      "size_bytes": 4265203868,
+      "sha256": "E9C575DBBE237EA889E14C41F953FC9FB311439A88B15BB2E789B0630AE45EFE",
+      "download_url": "https://huggingface.co/SG161222/Realistic_Vision_V6.0_B1_noVAE/resolve/main/Realistic_Vision_V6.0_NV_B1_inpainting.safetensors",
+      "license": "CreativeML OpenRAIL-M",
+      "license_url": "https://huggingface.co/SG161222/Realistic_Vision_V6.0_B1_noVAE",
+      "description": "Realistic Vision V6.0 B1 Inpainting model (FP32 full precision)"
+    },
+    {
+      "id": "stable-diffusion-v1-5-inpainting-Q4_0",
+      "filename": "stable-diffusion-v1-5-inpainting-Q4_0.gguf",
+      "relative_path": "models/Stable-diffusion/stable-diffusion-v1-5-inpainting-Q4_0.gguf",
+      "category": "INPAINT",
+      "architecture": "SD15_INPAINT",
+      "size_bytes": 1747219584,
+      "sha256": "D157CE24483F0C999062DA140EACEBE8F3ED015E652723E31F6D39119B800C16",
+      "download_url": "https://huggingface.co/gpustack/stable-diffusion-v1-5-inpainting-GGUF/resolve/main/stable-diffusion-v1-5-inpainting-Q4_0.gguf",
+      "license": "CreativeML OpenRAIL-M",
+      "license_url": "https://huggingface.co/runwayml/stable-diffusion-v1-5",
+      "description": "Stable Diffusion 1.5 Inpainting quantized Q4_0 GGUF"
+    },
+    {
+      "id": "vae-ft-mse-840000-ema-pruned",
+      "filename": "vae-ft-mse-840000-ema-pruned.safetensors",
+      "relative_path": "models/Stable-diffusion/vae-ft-mse-840000-ema-pruned.safetensors",
+      "category": "VAE",
+      "architecture": "SD15_VAE",
+      "size_bytes": 334641190,
+      "sha256": "735E4C3A447A3255760D7F86845F09F937809BAA529C17370D83E4C3758F3C75",
+      "download_url": "https://huggingface.co/stabilityai/sd-vae-ft-mse-original/resolve/main/vae-ft-mse-840000-ema-pruned.safetensors",
+      "license": "CreativeML OpenRAIL-M",
+      "license_url": "https://huggingface.co/stabilityai/sd-vae-ft-mse-original",
+      "description": "Fine-tuned MSE VAE for SD 1.5 checkpoints"
+    },
+    {
+      "id": "clip_vision_vit_h",
+      "filename": "clip_vision_vit_h.safetensors",
+      "relative_path": "models/image_conditioning/clip_vision/clip_vision_vit_h.safetensors",
+      "category": "IMAGE_CONDITIONING",
+      "architecture": "CLIP_VISION_VIT_H",
+      "size_bytes": 2528373448,
+      "sha256": "6CA9667DA1CA9E0B0F75E46BB030F7E011F44F86CBFB8D5A36590FCD7507B030",
+      "download_url": "https://huggingface.co/h94/IP-Adapter/resolve/main/models/image_encoder/model.safetensors",
+      "license": "Apache-2.0",
+      "license_url": "https://huggingface.co/h94/IP-Adapter",
+      "description": "CLIP Vision ViT-H/14 image encoder for IP-Adapter visual conditioning"
+    },
+    {
+      "id": "ip-adapter-plus_sd15",
+      "filename": "ip-adapter-plus_sd15.safetensors",
+      "relative_path": "models/image_conditioning/ip_adapter/ip-adapter-plus_sd15.safetensors",
+      "category": "IMAGE_CONDITIONING",
+      "architecture": "IP_ADAPTER_SD15",
+      "size_bytes": 98183288,
+      "sha256": "A1C250BE40455CC61A43DA1201EC3F1EDAEA71214865FB47F57927E06CBE4996",
+      "download_url": "https://huggingface.co/h94/IP-Adapter/resolve/main/models/ip-adapter-plus_sd15.safetensors",
+      "license": "Apache-2.0",
+      "license_url": "https://huggingface.co/h94/IP-Adapter",
+      "description": "IP-Adapter Plus for SD 1.5 (General person or object visual reference)"
+    },
+    {
+      "id": "ip-adapter-plus-face_sd15",
+      "filename": "ip-adapter-plus-face_sd15.safetensors",
+      "relative_path": "models/image_conditioning/ip_adapter/ip-adapter-plus-face_sd15.safetensors",
+      "category": "IMAGE_CONDITIONING",
+      "architecture": "IP_ADAPTER_SD15_FACE",
+      "size_bytes": 98183288,
+      "sha256": "1C9EDC21AF6F737DC1D6E0E734190E976CFACF802D6B024B77AA3BE922F7569B",
+      "download_url": "https://huggingface.co/h94/IP-Adapter/resolve/main/models/ip-adapter-plus-face_sd15.safetensors",
+      "license": "Apache-2.0",
+      "license_url": "https://huggingface.co/h94/IP-Adapter",
+      "description": "IP-Adapter Plus Face for SD 1.5 (Facial features reference and transfer)"
+    },
+    {
+      "id": "face_yolov8n",
+      "filename": "face_yolov8n.safetensors",
+      "relative_path": "models/image_conditioning/detectors/face_yolov8n.safetensors",
+      "category": "DETECTOR",
+      "architecture": "YOLOV8_NANO",
+      "size_bytes": 6033980,
+      "sha256": "CFA9840E2E6B82A48D644AF2924823E5EB26EF4333A90F840CC4F7DC49087FD7",
+      "download_url": "https://huggingface.co/exeterminal/adetailer-yolov8-safetensors/resolve/main/face_yolov8n.safetensors",
+      "license": "AGPL-3.0",
+      "license_url": "https://github.com/ultralytics/ultralytics",
+      "description": "YOLOv8 Nano face detector converted to safetensors for ADetailer bounding box detection"
+    }
+  ]
+}
