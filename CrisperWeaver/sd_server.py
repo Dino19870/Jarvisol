@@ -13,6 +13,7 @@ import sys
 import time
 import uuid
 import psutil
+import numpy as np
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageStat, ImageChops
 
@@ -1101,6 +1102,216 @@ def detect_face_yolov8(image: Image.Image, sd_cli_path: str, model_path: str, de
                 except Exception: pass
 
 
+
+def rgb_to_lab(rgb_arr):
+    """Conversion approximative rapide RGB vers LAB en numpy."""
+    rgb = rgb_arr.astype(np.float32) / 255.0
+    mask = rgb > 0.04045
+    rgb[mask] = np.power((rgb[mask] + 0.055) / 1.055, 2.4)
+    rgb[~mask] = rgb[~mask] / 12.92
+
+    matrix = np.array([
+        [0.4124564, 0.3575761, 0.1804375],
+        [0.2126729, 0.7151522, 0.0721750],
+        [0.0193339, 0.1191920, 0.9503041]
+    ], dtype=np.float32)
+    xyz = np.dot(rgb, matrix.T)
+
+    xyz[:, :, 0] /= 0.95047
+    xyz[:, :, 1] /= 1.00000
+    xyz[:, :, 2] /= 1.08883
+
+    delta = 6.0 / 29.0
+    m = xyz > delta**3
+    f_xyz = np.zeros_like(xyz)
+    f_xyz[m] = np.power(xyz[m], 1.0 / 3.0)
+    f_xyz[~m] = (xyz[~m] / (3 * delta**2)) + (4.0 / 29.0)
+
+    L = (116.0 * f_xyz[:, :, 1]) - 16.0
+    A = 500.0 * (f_xyz[:, :, 0] - f_xyz[:, :, 1])
+    B = 200.0 * (f_xyz[:, :, 1] - f_xyz[:, :, 2])
+    return np.stack([L, A, B], axis=-1)
+
+
+def lab_to_rgb(lab_arr):
+    """Conversion LAB vers RGB uint8."""
+    L, A, B = lab_arr[:, :, 0], lab_arr[:, :, 1], lab_arr[:, :, 2]
+    fy = (L + 16.0) / 116.0
+    fx = fy + (A / 500.0)
+    fz = fy - (B / 200.0)
+
+    delta = 6.0 / 29.0
+    x = np.where(fx > delta, fx**3, 3 * delta**2 * (fx - 4.0 / 29.0)) * 0.95047
+    y = np.where(fy > delta, fy**3, 3 * delta**2 * (fy - 4.0 / 29.0)) * 1.00000
+    z = np.where(fz > delta, fz**3, 3 * delta**2 * (fz - 4.0 / 29.0)) * 1.08883
+
+    xyz = np.stack([x, y, z], axis=-1)
+    inv_matrix = np.array([
+        [ 3.2404542, -1.5371385, -0.4985314],
+        [-0.9692660,  1.8760108,  0.0415560],
+        [ 0.0556434, -0.2040259,  1.0572252]
+    ], dtype=np.float32)
+    rgb_lin = np.dot(xyz, inv_matrix.T)
+
+    mask = rgb_lin > 0.0031308
+    rgb = np.zeros_like(rgb_lin)
+    rgb[mask] = 1.055 * np.power(np.maximum(rgb_lin[mask], 1e-8), 1.0 / 2.4) - 0.055
+    rgb[~mask] = 12.92 * rgb_lin[~mask]
+
+    rgb = np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
+    return rgb
+
+
+def transfer_color_reinhard(source_crop_rgb: np.ndarray, target_crop_rgb: np.ndarray) -> np.ndarray:
+    """Transfert statistique de distribution de couleur (Reinhard) de la cible vers la source."""
+    src_lab = rgb_to_lab(source_crop_rgb)
+    tgt_lab = rgb_to_lab(target_crop_rgb)
+
+    matched_lab = np.zeros_like(src_lab)
+    for c in range(3):
+        src_c = src_lab[:, :, c]
+        tgt_c = tgt_lab[:, :, c]
+        s_mean, s_std = float(np.mean(src_c)), float(np.std(src_c))
+        t_mean, t_std = float(np.mean(tgt_c)), float(np.std(tgt_c))
+
+        if s_std < 1e-5:
+            matched_lab[:, :, c] = src_c + (t_mean - s_mean)
+        else:
+            scale = np.clip(t_std / s_std, 0.5, 1.8)
+            matched_lab[:, :, c] = (src_c - s_mean) * scale + t_mean
+
+    return lab_to_rgb(matched_lab)
+
+
+def process_strict_face_swap(
+    img_a: Image.Image,
+    img_b: Image.Image,
+    strength: float,
+    steps: int,
+    prompt: str,
+    sd_cli_path: str,
+    inpaint_file: str,
+    detector_file: str,
+    meta: dict,
+) -> dict:
+    """
+    Exécution stricte de remplacement du visage (Face Swap).
+    - Image A = Source d'identité
+    - Image B = Personnage cible et scène finale
+    Ne modifie pas l'identité faciale de A (pas de diffusion destructive).
+    Harmonise l'éclairage/teint via Reinhard CIE-LAB et incruste avec masque adouci.
+    Optionnellement affine les bordures/coutures si strength > 0.05.
+    """
+    # 1. Normalisation en 512x512
+    img_a_512 = img_a.convert("RGB").resize((512, 512), Image.Resampling.LANCZOS)
+    img_b_512 = img_b.convert("RGB").resize((512, 512), Image.Resampling.LANCZOS)
+
+    # 2. Détection du visage sur Image A (Source identité)
+    dets_a = detect_face_yolov8(img_a_512, sd_cli_path, inpaint_file, detector_file)
+    if not dets_a:
+        raise ValueError("NO_FACE_IN_A: Remplacement strict du visage : aucun visage détecté dans l'Image A (source identité).")
+    face_a = max(dets_a, key=lambda d: d["area"])
+    bbox_a = face_a["bbox"]
+
+    # 3. Détection du visage sur Image B (Personnage cible)
+    dets_b = detect_face_yolov8(img_b_512, sd_cli_path, inpaint_file, detector_file)
+    if not dets_b:
+        raise ValueError("NO_FACE_IN_B: Remplacement strict du visage : aucun visage détecté dans l'Image B (personnage cible).")
+    face_b = max(dets_b, key=lambda d: d["area"])
+    bbox_b = face_b["bbox"]
+
+    # 4. Découpe anatomique visage A
+    ax1, ay1, ax2, ay2 = bbox_a
+    aw = ax2 - ax1
+    ah = ay2 - ay1
+    pad_xa = aw * 0.12
+    pad_ya = ah * 0.12
+    ca_x1 = max(0, int(ax1 - pad_xa))
+    ca_y1 = max(0, int(ay1 - pad_ya))
+    ca_x2 = min(512, int(ax2 + pad_xa))
+    ca_y2 = min(512, int(ay2 + pad_ya))
+    crop_a = img_a_512.crop((ca_x1, ca_y1, ca_x2, ca_y2))
+
+    # 5. Zone cible sur Image B
+    bx1, by1, bx2, by2 = bbox_b
+    bw = bx2 - bx1
+    bh = by2 - by1
+    pad_xb = bw * 0.12
+    pad_yb = bh * 0.12
+    cb_x1 = max(0, int(bx1 - pad_xb))
+    cb_y1 = max(0, int(by1 - pad_yb))
+    cb_x2 = min(512, int(bx2 + pad_xb))
+    cb_y2 = min(512, int(by2 + pad_yb))
+    tw = max(16, cb_x2 - cb_x1)
+    th = max(16, cb_y2 - cb_y1)
+
+    # 6. Redimensionnement et transfert colorimétrique Reinhard CIE-LAB
+    crop_a_resized = crop_a.resize((tw, th), Image.Resampling.LANCZOS)
+    crop_b = img_b_512.crop((cb_x1, cb_y1, cb_x2, cb_y2))
+
+    matched_a_arr = transfer_color_reinhard(np.array(crop_a_resized), np.array(crop_b))
+    matched_a_img = Image.fromarray(matched_a_arr)
+
+    # 7. Masque elliptique avec feathering doux
+    feather_mask = Image.new("L", (tw, th), 0)
+    draw_f = ImageDraw.Draw(feather_mask)
+    draw_f.ellipse([int(tw * 0.05), int(th * 0.05), int(tw * 0.95), int(th * 0.95)], fill=255)
+    blur_rad = max(4, int(min(tw, th) * 0.10))
+    feather_mask = feather_mask.filter(ImageFilter.GaussianBlur(radius=blur_rad))
+
+    # 8. Incrustation sur l'Image B
+    composite_b = img_b_512.copy()
+    composite_b.paste(matched_a_img, (cb_x1, cb_y1), feather_mask)
+
+    # 9. Raffinement de contour/couture optionnel (seulement si strength > 0.05)
+    if strength and strength > 0.05:
+        full_mask = Image.new("L", (512, 512), 0)
+        full_mask.paste(feather_mask, (cb_x1, cb_y1))
+
+        kernel_size = max(3, (blur_rad // 2) * 2 + 1)
+        eroded = full_mask.filter(ImageFilter.MinFilter(size=kernel_size))
+        dilated = full_mask.filter(ImageFilter.MaxFilter(size=kernel_size))
+        seam_mask = ImageChops.subtract(dilated, eroded)
+        seam_mask = seam_mask.filter(ImageFilter.GaussianBlur(radius=4))
+
+        buf_comp = io.BytesIO()
+        composite_b.save(buf_comp, format="PNG")
+        comp_b64 = base64.b64encode(buf_comp.getvalue()).decode("utf-8")
+
+        buf_seam = io.BytesIO()
+        seam_mask.save(buf_seam, format="PNG")
+        seam_b64 = base64.b64encode(buf_seam.getvalue()).decode("utf-8")
+
+        effective_strength = min(0.35, max(0.05, float(strength)))
+        seam_prompt = prompt.strip() if (prompt and prompt.strip()) else "high quality portrait, seamless blending, photorealistic, natural skin texture"
+
+        out_bytes = inpaint_image(
+            comp_b64,
+            seam_b64,
+            seam_prompt,
+            strength=effective_strength,
+            steps=steps or 20,
+            model_hint=inpaint_file,
+        )
+        out_b64 = base64.b64encode(out_bytes).decode("utf-8")
+    else:
+        buf_out = io.BytesIO()
+        composite_b.save(buf_out, format="PNG")
+        out_b64 = base64.b64encode(buf_out.getvalue()).decode("utf-8")
+
+    return {
+        "images": [out_b64],
+        "pipeline_type": meta["pipeline_type"],
+        "inpaint_model_used": os.path.basename(inpaint_file),
+        "ip_adapter_used": None,
+        "detector_used": os.path.basename(detector_file),
+        "face_bbox": [round(v, 1) for v in bbox_b],
+        "face_a_bbox": [round(v, 1) for v in bbox_a],
+        "capability_detail": meta["capability_detail"],
+        "info": "Remplacement strict du visage (Face Swap) effectué avec succès",
+    }
+
+
 def process_multi_image(image_a_b64: str, image_b_b64: str, mask_b64: str = "",
                         mode: str = "reference_person_or_object", prompt: str = "",
                         strength: float = 0.75, steps: int = 20, model_hint: str = "") -> dict:
@@ -1200,6 +1411,13 @@ def process_multi_image(image_a_b64: str, image_b_b64: str, mask_b64: str = "",
             "detector_used": None,
             "capability_detail": "Mode heuristique hérité (composition alpha/fusion)",
         },
+        "strict_face_swap": {
+            "pipeline_type": "STRICT_FACE_SWAP",
+            "ip_adapter_file": None,
+            "clip_vision_file": None,
+            "detector_used": "face_yolov8n.safetensors",
+            "capability_detail": "Remplacement strict du visage (Face Swap) avec préservation morphologique haute fidélité",
+        },
     }
 
     meta = mode_metadata.get(mode, mode_metadata["reference_person_or_object"])
@@ -1232,7 +1450,25 @@ def process_multi_image(image_a_b64: str, image_b_b64: str, mask_b64: str = "",
     detected_face_bbox = None
     detector_used_name = None
 
-    if mode == "auto_face_detect":
+    if mode == "strict_face_swap":
+        detector_file = find_conditioning_file("face_yolov8n.safetensors")
+        if not detector_file:
+            raise RuntimeError("DETECTOR_NOT_FOUND: Le modèle de détection 'face_yolov8n.safetensors' est introuvable sur le disque.")
+
+        print("[Multi-Image] Remplacement strict du visage (Face Swap)...")
+        return process_strict_face_swap(
+            img_a=img_a_norm,
+            img_b=img_b_norm,
+            strength=strength,
+            steps=steps,
+            prompt=prompt,
+            sd_cli_path=sd_cli,
+            inpaint_file=inpaint_file,
+            detector_file=detector_file,
+            meta=meta,
+        )
+
+    elif mode == "auto_face_detect":
         detector_file = find_conditioning_file("face_yolov8n.safetensors")
         if not detector_file:
             raise RuntimeError("DETECTOR_NOT_FOUND: Le modèle de détection 'face_yolov8n.safetensors' est introuvable sur le disque.")

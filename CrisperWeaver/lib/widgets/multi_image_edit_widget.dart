@@ -64,6 +64,17 @@ enum MultiImageEditMode {
     capabilityDetail: 'Fallback heuristique spatial PIL R1 (sans conditionnement neuronal direct) — Heuristique R1 est un fallback spatial sans detourage automatique. Utilisez une Image A cadree ou detouree. Pour transferer un visage depuis une photo complete, utilisez Reference visage.',
     defaultPrompt: 'high quality photographic composite, smooth blending',
     defaultStrength: 0.60,
+  ),
+  strictFaceSwap(
+    id: 'strict_face_swap',
+    label: 'Remplacement strict du visage (Face Swap)',
+    badgeText: 'STRICT FACE SWAP',
+    description: 'Remplacement haute fidelite du visage de A sur le corps et la scene de B (harmonisation chromatique Reinhard CIE-LAB et preservation morphologique).',
+    isFullySupported: true,
+    capabilityLabel: 'STRICT FACE SWAP',
+    capabilityDetail: 'Remplacement strict du visage avec preservation morphologique haute fidelite et alignement chromatique Reinhard CIE-LAB',
+    defaultPrompt: 'high quality portrait, seamless blending, photorealistic, natural skin texture',
+    defaultStrength: 0.25,
   );
 
   final String id;
@@ -374,6 +385,10 @@ class _MultiImageEditWidgetState extends ConsumerState<MultiImageEditWidget> {
           _resultBytes = null;
           if (errText.contains('NO_FACE_DETECTED')) {
             _statusMessage = "Visage automatique : aucun visage détecté dans l'image cible.";
+          } else if (errText.contains('NO_FACE_IN_A')) {
+            _statusMessage = "Remplacement strict du visage : aucun visage détecté dans l'Image A (source identité).";
+          } else if (errText.contains('NO_FACE_IN_B')) {
+            _statusMessage = "Remplacement strict du visage : aucun visage détecté dans l'Image B (personnage cible).";
           } else {
             _statusMessage = 'Echec : $errText';
           }
@@ -463,22 +478,30 @@ class _MultiImageEditWidgetState extends ConsumerState<MultiImageEditWidget> {
               final isNarrow = constraints.maxWidth < 750;
               final imagePanels = [
                 _buildImageSlot(
-                  title: 'Image A (Source / Reference)',
-                  subtitle: 'Personnage, objet ou reference',
+                  title: _selectedMode == MultiImageEditMode.strictFaceSwap
+                      ? 'Image A (Source Identite)'
+                      : 'Image A (Source / Reference)',
+                  subtitle: _selectedMode == MultiImageEditMode.strictFaceSwap
+                      ? 'Visage a transferer (haute fidelite)'
+                      : 'Personnage, objet ou reference',
                   icon: Icons.filter_1,
                   badgeColor: Colors.blueAccent,
-                  badgeText: 'SOURCE',
+                  badgeText: _selectedMode == MultiImageEditMode.strictFaceSwap ? 'IDENTITE' : 'SOURCE',
                   imageBytes: _imageABytes,
                   fileName: _imageAName,
                   onPick: _pickImageA,
                   onClear: () => setState(() { _imageABytes = null; _imageAName = null; }),
                 ),
                 _buildImageSlot(
-                  title: 'Image B (Cible / Scene)',
-                  subtitle: 'Arriere-plan, decor ou scene finale',
+                  title: _selectedMode == MultiImageEditMode.strictFaceSwap
+                      ? 'Image B (Personnage Cible / Scene)'
+                      : 'Image B (Cible / Scene)',
+                  subtitle: _selectedMode == MultiImageEditMode.strictFaceSwap
+                      ? 'Personnage cible, pose et decor final'
+                      : 'Arriere-plan, decor ou scene finale',
                   icon: Icons.filter_2,
                   badgeColor: Colors.teal,
-                  badgeText: 'CIBLE',
+                  badgeText: _selectedMode == MultiImageEditMode.strictFaceSwap ? 'CIBLE SCENE' : 'CIBLE',
                   imageBytes: _imageBBytes,
                   fileName: _imageBName,
                   onPick: _pickImageB,
@@ -660,6 +683,33 @@ class _MultiImageEditWidgetState extends ConsumerState<MultiImageEditWidget> {
                       ],
                     ),
                   ),
+                  if (_selectedMode == MultiImageEditMode.strictFaceSwap) ...[
+                    const SizedBox(height: 10),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: isDark ? Colors.amber.shade900.withValues(alpha: 0.25) : Colors.amber.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.amber.shade700, width: 1.5),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.warning_amber_rounded, color: Colors.amber.shade800, size: 24),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              '⚠️ Mode à forte fidélité d\'identité. À utiliser uniquement avec les droits / consentements appropriés.',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: isDark ? Colors.amber.shade200 : Colors.amber.shade900,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 10),
                   Container(
                     padding: const EdgeInsets.all(10),

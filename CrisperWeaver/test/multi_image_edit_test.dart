@@ -11,8 +11,8 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   group('MULTI-IMAGE EDIT R3 : Tests Unitaires des Modes & Capacites', () {
-    test('1.1 Verification des 5 modes definis pour R3', () {
-      expect(MultiImageEditMode.values.length, equals(5));
+    test('1.1 Verification des 6 modes definis (incluant Remplacement strict du visage)', () {
+      expect(MultiImageEditMode.values.length, equals(6));
 
       final modes = MultiImageEditMode.values.map((m) => m.id).toList();
       expect(modes, contains('reference_person_or_object'));
@@ -20,9 +20,10 @@ void main() {
       expect(modes, contains('auto_face_detect'));
       expect(modes, contains('manual_mask_priority'));
       expect(modes, contains('legacy_heuristic_r1'));
+      expect(modes, contains('strict_face_swap'));
     });
 
-    test('1.2 Matrice de capacite factuelle : NATIVE IP-ADAPTER vs FALLBACK', () {
+    test('1.2 Matrice de capacite factuelle : NATIVE IP-ADAPTER vs FALLBACK vs STRICT FACE SWAP', () {
       // 1. reference_person_or_object -> NATIVE IP-ADAPTER
       expect(MultiImageEditMode.referencePersonOrObject.isFullySupported, isTrue);
       expect(MultiImageEditMode.referencePersonOrObject.capabilityLabel, equals('NATIVE IP-ADAPTER'));
@@ -43,6 +44,12 @@ void main() {
       // 5. legacy_heuristic_r1 -> FALLBACK HEURISTIQUE
       expect(MultiImageEditMode.legacyHeuristic.isFullySupported, isFalse);
       expect(MultiImageEditMode.legacyHeuristic.capabilityLabel, equals('FALLBACK HEURISTIQUE'));
+
+      // 6. strict_face_swap -> STRICT FACE SWAP
+      expect(MultiImageEditMode.strictFaceSwap.isFullySupported, isTrue);
+      expect(MultiImageEditMode.strictFaceSwap.capabilityLabel, equals('STRICT FACE SWAP'));
+      expect(MultiImageEditMode.strictFaceSwap.capabilityDetail, contains('Reinhard CIE-LAB'));
+      expect(MultiImageEditMode.strictFaceSwap.defaultStrength, equals(0.25));
     });
   });
 
@@ -75,6 +82,7 @@ void main() {
       expect(find.text('Visage automatique'), findsOneWidget);
       expect(find.text('Masque manuel prioritaire'), findsOneWidget);
       expect(find.text('Heuristique R1 (sans adaptateur)'), findsOneWidget);
+      expect(find.text('Remplacement strict du visage (Face Swap)'), findsOneWidget);
 
       // Selecteur de modele
       expect(find.text('Modele inpainting actif (aucune substitution silencieuse) :'), findsOneWidget);
@@ -109,6 +117,21 @@ void main() {
 
       expect(find.text('FALLBACK SPATIAL'), findsOneWidget);
       expect(find.textContaining('sans conditionnement neuronal direct'), findsWidgets);
+
+      // Cliquer sur Remplacement strict du visage
+      await tester.tap(find.text('Remplacement strict du visage (Face Swap)'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('STRICT FACE SWAP'), findsOneWidget);
+      expect(find.textContaining('⚠️ Mode à forte fidélité d\'identité'), findsOneWidget);
+      expect(find.text('IDENTITE'), findsOneWidget);
+      expect(find.text('CIBLE SCENE'), findsOneWidget);
+
+      // Revenir au mode Reference personnage / objet : la banniere doit disparaitre
+      await tester.tap(find.text('Reference personnage / objet'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('⚠️ Mode à forte fidélité d\'identité'), findsNothing);
+      expect(find.text('SOURCE'), findsOneWidget);
     });
 
     testWidgets('2.3 Validation de securite : refus si images A ou B manquantes', (tester) async {
