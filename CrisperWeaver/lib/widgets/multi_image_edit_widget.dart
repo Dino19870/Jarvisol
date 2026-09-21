@@ -67,14 +67,14 @@ enum MultiImageEditMode {
   ),
   strictFaceSwap(
     id: 'strict_face_swap',
-    label: 'Remplacement strict du visage (Face Swap)',
-    badgeText: 'STRICT FACE SWAP',
-    description: 'Remplacement haute fidelite du visage de A sur le corps et la scene de B (harmonisation chromatique Reinhard CIE-LAB et preservation morphologique).',
+    label: 'Remplacement strict du visage (Face Swap R8)',
+    badgeText: 'FACE SWAP DÉTERMINISTE',
+    description: 'Pipeline déterministe temps réel : préservation morphologique 100% de A, ancrage géométrique sur B, harmonisation cutanée CIE-LAB, raccord local sans diffusion neuronale.',
     isFullySupported: true,
-    capabilityLabel: 'STRICT FACE SWAP',
-    capabilityDetail: 'Remplacement strict du visage avec preservation morphologique haute fidelite et alignement chromatique Reinhard CIE-LAB',
-    defaultPrompt: 'high quality portrait, seamless blending, photorealistic, natural skin texture',
-    defaultStrength: 0.25,
+    capabilityLabel: 'PIPELINE DÉTERMINISTE R8',
+    capabilityDetail: 'Préservation morphologique exacte (MediaPipe 478 pts), ancrage strict de la silhouette de B, harmonisation cutanée CIE-LAB et incrustation progressive sans diffusion neuronale.',
+    defaultPrompt: '',
+    defaultStrength: 0.0,
   );
 
   final String id;
@@ -323,7 +323,9 @@ class _MultiImageEditWidgetState extends ConsumerState<MultiImageEditWidget> {
     setState(() {
       _resultBytes = null;
       _isGenerating = true;
-      _statusMessage = 'Generation en cours avec le moteur neural local...';
+      _statusMessage = _selectedMode == MultiImageEditMode.strictFaceSwap
+          ? 'Alignement du visage et harmonisation colorimétrique...'
+          : 'Generation en cours avec le moteur neural local...';
       _isError = false;
     });
 
@@ -368,7 +370,9 @@ class _MultiImageEditWidgetState extends ConsumerState<MultiImageEditWidget> {
 
           setState(() {
             _resultBytes = outBytes;
-            _resultInfo = 'Pipeline : $pipelineType\nModele Inpaint : $modelUsed\nAdaptateur : ${ipAdapterUsed ?? "Aucun"}${detectorUsed != null ? "\nDetecteur : $detectorUsed" : ""}\n$detail';
+            _resultInfo = _selectedMode == MultiImageEditMode.strictFaceSwap
+                ? 'Pipeline : Déterministe R8 (Temps réel)\nAncrage : Géométrie faciale et corporelle de B\nHarmonisation : Espace CIE-LAB\nDiffusion : Aucune passe neuronale (100% fidélité)'
+                : 'Pipeline : $pipelineType\nModele Inpaint : $modelUsed\nAdaptateur : ${ipAdapterUsed ?? "Aucun"}${detectorUsed != null ? "\nDetecteur : $detectorUsed" : ""}\n$detail';
             _statusMessage = 'Composition generee avec succes ! (${_selectedMode.capabilityLabel})';
             _isError = false;
           });
@@ -756,68 +760,110 @@ class _MultiImageEditWidgetState extends ConsumerState<MultiImageEditWidget> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Prompt descriptif pour l harmonisation :', style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
-                  TextField(
-                    controller: _promptController,
-                    maxLines: 2,
-                    decoration: const InputDecoration(
-                      hintText: 'Decrivez l integration, la lumiere, les details ou le style souhaite...',
-                      border: OutlineInputBorder(),
-                      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  if (_selectedMode == MultiImageEditMode.strictFaceSwap) ...[
+                    Row(
+                      children: [
+                        const Icon(Icons.flash_on, color: Colors.green, size: 20),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Pipeline Déterministe R8 (Temps réel sans diffusion) :',
+                          style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold, color: Colors.green.shade800),
+                        ),
+                      ],
                     ),
-                  ),
-                  const SizedBox(height: 14),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text('Force de retouche (Strength) : ${_strength.toStringAsFixed(2)}', style: const TextStyle(fontSize: 12)),
-                            Slider(
-                              value: _strength,
-                              min: 0.20,
-                              max: 0.90,
-                              divisions: 14,
-                              label: _strength.toStringAsFixed(2),
-                              onChanged: (val) => setState(() => _strength = val),
-                            ),
-                          ],
-                        ),
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: isDark ? Colors.green.shade900.withValues(alpha: 0.25) : Colors.green.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.green.shade700, width: 1),
                       ),
-                      const SizedBox(width: 16),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text('Etapes (Steps) : $_steps', style: const TextStyle(fontSize: 12)),
-                            Slider(
-                              value: _steps.toDouble(),
-                              min: 10,
-                              max: 40,
-                              divisions: 6,
-                              label: '$_steps',
-                              onChanged: (val) => setState(() => _steps = val.toInt()),
-                            ),
-                          ],
-                        ),
+                      child: const Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '• Préservation morphologique intégrale du visage source (MediaPipe 478 repères)\n'
+                            '• Ancrage géométrique strict et silhouette invariante de l\'Image B (0 déformation)\n'
+                            '• Harmonisation cutanée dans l\'espace colorimétrique CIE-LAB\n'
+                            '• Raccord local et incrustation progressive sans démarcation\n'
+                            '• Aucune diffusion neuronale du visage : exécution instantanée, réglages de prompt et steps inopérants.',
+                            style: TextStyle(fontSize: 12, height: 1.4),
+                          ),
+                        ],
                       ),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
+                    ),
+                    const SizedBox(height: 10),
+                  ] else ...[
+                    Text('Prompt descriptif pour l harmonisation :', style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _promptController,
+                      maxLines: 2,
+                      decoration: const InputDecoration(
+                        hintText: 'Decrivez l integration, la lumiere, les details ou le style souhaite...',
+                        border: OutlineInputBorder(),
+                        contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('Force de retouche (Strength) : ${_strength.toStringAsFixed(2)}', style: const TextStyle(fontSize: 12)),
+                              Slider(
+                                value: _strength,
+                                min: 0.20,
+                                max: 0.90,
+                                divisions: 14,
+                                label: _strength.toStringAsFixed(2),
+                                onChanged: (val) => setState(() => _strength = val),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('Etapes (Steps) : $_steps', style: const TextStyle(fontSize: 12)),
+                              Slider(
+                                value: _steps.toDouble(),
+                                min: 10,
+                                max: 40,
+                                divisions: 6,
+                                label: '$_steps',
+                                onChanged: (val) => setState(() => _steps = val.toInt()),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                  ],
                   ElevatedButton.icon(
                     style: ElevatedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(vertical: 14),
-                      backgroundColor: Colors.indigoAccent,
+                      backgroundColor: _selectedMode == MultiImageEditMode.strictFaceSwap ? Colors.green.shade700 : Colors.indigoAccent,
                       foregroundColor: Colors.white,
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                     ),
                     icon: _isGenerating
                         ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                        : const Icon(Icons.bolt),
+                        : Icon(_selectedMode == MultiImageEditMode.strictFaceSwap ? Icons.face_retouching_natural : Icons.bolt),
                     label: Text(
-                      _isGenerating ? 'Harmonisation neurale en cours...' : 'Lancer la composition',
+                      _isGenerating
+                          ? (_selectedMode == MultiImageEditMode.strictFaceSwap
+                              ? 'Alignement du visage et harmonisation colorimétrique...'
+                              : 'Harmonisation neurale en cours...')
+                          : (_selectedMode == MultiImageEditMode.strictFaceSwap
+                              ? 'Exécuter le remplacement du visage (R8)'
+                              : 'Lancer la composition'),
                       style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
                     ),
                     onPressed: _isGenerating ? null : _generateComposition,

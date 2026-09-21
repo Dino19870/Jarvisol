@@ -1219,6 +1219,7 @@ def process_strict_face_swap(
     Supporte les modes "face_only" (défaut recommandé) et "full_head".
     """
     skin_strength = float(meta.get("skin_harmonization_strength", 0.60))
+    t_start_strict = time.time()
     
     # Détection du mode de cadrage : "face_only" (défaut) ou "full_head"
     swap_scope = meta.get("swap_scope")
@@ -1376,35 +1377,15 @@ def process_strict_face_swap(
             composite_rgb = cv2.cvtColor(composite_bgr, cv2.COLOR_BGR2RGB)
             final_img = Image.fromarray(composite_rgb)
 
-            # 9. Raffinement de contour optionnel (si diffusion demandée)
-            if strength and strength > 0.05:
-                seam_mask_np = np.clip((mask_target.astype(float) - core_mask.astype(float)) * 255.0, 0, 255).astype(np.uint8)
-                seam_mask_pil = Image.fromarray(seam_mask_np).filter(ImageFilter.GaussianBlur(radius=4))
+            # 9. R8 : Pipeline déterministe temps réel sans passe neurale héritée
+            buf_out = io.BytesIO()
+            final_img.save(buf_out, format="PNG")
+            out_b64 = base64.b64encode(buf_out.getvalue()).decode("utf-8")
 
-                buf_comp = io.BytesIO()
-                final_img.save(buf_comp, format="PNG")
-                comp_b64 = base64.b64encode(buf_comp.getvalue()).decode("utf-8")
-
-                buf_seam = io.BytesIO()
-                seam_mask_pil.save(buf_seam, format="PNG")
-                seam_b64 = base64.b64encode(buf_seam.getvalue()).decode("utf-8")
-
-                effective_strength = min(0.35, max(0.05, float(strength)))
-                seam_prompt = prompt.strip() if (prompt and prompt.strip()) else "high quality portrait, seamless skin transition, photorealistic"
-
-                out_bytes = inpaint_image(
-                    comp_b64,
-                    seam_b64,
-                    seam_prompt,
-                    strength=effective_strength,
-                    steps=steps or 20,
-                    model_hint=inpaint_file,
-                )
-                out_b64 = base64.b64encode(out_bytes).decode("utf-8")
-            else:
-                buf_out = io.BytesIO()
-                final_img.save(buf_out, format="PNG")
-                out_b64 = base64.b64encode(buf_out.getvalue()).decode("utf-8")
+            total_strict_ms = (time.time() - t_start_strict) * 1000.0
+            print("[StrictFaceSwap] R8 deterministic pipeline complete")
+            print("[StrictFaceSwap] Neural inpaint skipped by design")
+            print(f"[StrictFaceSwap] total_ms={total_strict_ms:.2f}")
 
             # Bounding box pour reporting
             x_min_b, y_min_b = np.min(pts_b, axis=0)
@@ -1415,15 +1396,15 @@ def process_strict_face_swap(
             return {
                 "images": [out_b64],
                 "pipeline_type": meta["pipeline_type"],
-                "inpaint_model_used": os.path.basename(inpaint_file),
+                "inpaint_model_used": "Aucun (R8 Déterministe)",
                 "ip_adapter_used": None,
-                "detector_used": "face_landmarker.task (MediaPipe R7 Proportion Normalization)",
+                "detector_used": "face_landmarker.task (MediaPipe R8 Déterministe)",
                 "face_bbox": [round(float(v), 1) for v in [x_min_b, y_min_b, x_max_b, y_max_b]],
                 "face_a_bbox": [round(float(v), 1) for v in [x_min_a, y_min_a, x_max_a, y_max_a]],
                 "capability_detail": meta["capability_detail"],
                 "skin_harmonization_strength": skin_strength,
                 "swap_scope": swap_scope,
-                "info": f"Remplacement strict R7 : Pré-normalisation géométrique sur B ({swap_scope}) + Harmonisation cutanée",
+                "info": f"Remplacement strict R8 : Pré-normalisation géométrique sur B ({swap_scope}) + Harmonisation cutanée CIE-LAB (Pipeline déterministe temps réel sans diffusion)",
             }
 
         except Exception as e:
@@ -1635,7 +1616,7 @@ def process_multi_image(image_a_b64: str, image_b_b64: str, mask_b64: str = "",
         if not detector_file:
             raise RuntimeError("DETECTOR_NOT_FOUND: Le modèle de détection 'face_yolov8n.safetensors' est introuvable sur le disque.")
 
-        print("[Multi-Image] Remplacement strict du visage (Face Swap R7)...")
+        print("[Multi-Image] Remplacement strict du visage (Face Swap R8 Déterministe)...")
         return process_strict_face_swap(
             img_a=img_a.convert("RGB"),
             img_b=img_b.convert("RGB"),
