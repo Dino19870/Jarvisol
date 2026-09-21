@@ -17,6 +17,20 @@ import numpy as np
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageStat, ImageChops
 
+try:
+    import cv2
+except ImportError:
+    cv2 = None
+
+try:
+    import mediapipe as mp
+    from mediapipe.tasks import python as mp_python
+    from mediapipe.tasks.python import vision as mp_vision
+except ImportError:
+    mp = None
+    mp_python = None
+    mp_vision = None
+
 # --- Detection du repertoire reel (PyInstaller --onefile compatible) ----------
 if getattr(sys, "frozen", False):
     SCRIPT_DIR = os.path.dirname(os.path.abspath(sys.executable))
@@ -1195,109 +1209,275 @@ def process_strict_face_swap(
     meta: dict,
 ) -> dict:
     """
-    Exécution stricte de remplacement du visage (Face Swap).
-    - Image A = Source d'identité
-    - Image B = Personnage cible et scène finale
-    Ne modifie pas l'identité faciale de A (pas de diffusion destructive).
-    Harmonise l'éclairage/teint via Reinhard CIE-LAB et incruste avec masque adouci.
-    Optionnellement affine les bordures/coutures si strength > 0.05.
+    Exécution stricte de remplacement du visage (Face Swap R7 - Normalisation des Proportions).
+    - Image A = Source d'identité (visage ou tête)
+    - Image B = Personnage cible et scène finale (Canevas de référence invariant)
+    Règle absolue : Le corps, les épaules, le buste, la posture et l'échelle générale
+    de l'Image B restent 100% inchangés (zéro déformation anamorphique, zéro grossissement).
+    Pré-normalisation géométrique multidimensionnelle de A (écart inter-oculaire,
+    hauteur front-menton, largeur utile, angle roll) calée sur le gabarit facial de B.
+    Supporte les modes "face_only" (défaut recommandé) et "full_head".
     """
-    # 1. Normalisation en 512x512
+    skin_strength = float(meta.get("skin_harmonization_strength", 0.60))
+    
+    # Détection du mode de cadrage : "face_only" (défaut) ou "full_head"
+    swap_scope = meta.get("swap_scope")
+    if not swap_scope:
+        p_lower = prompt.lower() if prompt else ""
+        if "full_head" in p_lower or "head_swap" in p_lower or "head swap" in p_lower or "tête complète" in p_lower:
+            swap_scope = "full_head"
+        else:
+            swap_scope = "face_only"
+
+    # Recherche du modèle de landmarks MediaPipe
+    task_model_path = find_file("face_landmarker.task")
+    use_landmark_pipeline = (cv2 is not None and mp_vision is not None and task_model_path is not None)
+
+    if use_landmark_pipeline:
+        try:
+            # 1. Canevas natif de B préservé sans déformation
+            img_a_rgb = img_a.convert("RGB")
+            img_b_rgb = img_b.convert("RGB")
+            a_bgr = cv2.cvtColor(np.array(img_a_rgb), cv2.COLOR_RGB2BGR)
+            b_bgr = cv2.cvtColor(np.array(img_b_rgb), cv2.COLOR_RGB2BGR)
+            ha, wa = a_bgr.shape[:2]
+            hb, wb = b_bgr.shape[:2]
+
+            # 2. Détection des landmarks faciaux réels MediaPipe
+            base_opts = mp_python.BaseOptions(model_asset_path=task_model_path)
+            opts = mp_vision.FaceLandmarkerOptions(base_options=base_opts, num_faces=1)
+            with mp_vision.FaceLandmarker.create_from_options(opts) as landmarker:
+                mp_a = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.array(img_a_rgb))
+                mp_b = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.array(img_b_rgb))
+                res_a = landmarker.detect(mp_a)
+                res_b = landmarker.detect(mp_b)
+
+            if not res_a.face_landmarks:
+                raise ValueError("NO_FACE_IN_A: Remplacement strict du visage : aucun repère facial détecté dans l'Image A (source identité).")
+            if not res_b.face_landmarks:
+                raise ValueError("NO_FACE_IN_B: Remplacement strict du visage : aucun repère facial détecté dans l'Image B (personnage cible).")
+
+            pts_a = np.array([[l.x * wa, l.y * ha] for l in res_a.face_landmarks[0]], dtype=np.float32)
+            pts_b = np.array([[l.x * wb, l.y * hb] for l in res_b.face_landmarks[0]], dtype=np.float32)
+
+            # 3. Pré-normalisation géométrique multidimensionnelle (R7)
+            # Ancrages anatomiques : yeux, nez, front, menton, joues et bouche
+            anchor_indices = [
+                33, 133, 159, 145,       # Oeil gauche
+                362, 263, 386, 374,     # Oeil droit
+                1, 4, 19, 94,           # Nez
+                10, 151, 9, 8,          # Front / glabelle
+                152, 175, 199, 200,     # Menton / base mandibulaire
+                234, 127, 162, 21,      # Joue / tempe gauche
+                454, 356, 389, 251,     # Joue / tempe droite
+                61, 291, 0, 17          # Lèvres et commissures
+            ]
+
+            src_anchors = pts_a[anchor_indices]
+            dst_anchors = pts_b[anchor_indices]
+
+            # Transformation affine 2D qui recale la hauteur, la largeur et l'axe des yeux sur B
+            M_norm, _ = cv2.estimateAffine2D(src_anchors, dst_anchors, method=cv2.LMEDS)
+            pts_a_norm = cv2.transform(pts_a.reshape(-1, 1, 2), M_norm).reshape(-1, 2)
+            warped_norm = cv2.warpAffine(a_bgr, M_norm, (wb, hb), flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REFLECT)
+
+            # 4. Délimitation du masque selon le niveau demandé ("face_only" vs "full_head")
+            jaw_idx_b = [172, 136, 150, 149, 176, 148, 152, 377, 400, 378, 379, 365, 397]
+            brow_idx_b = [70, 63, 105, 66, 107, 336, 296, 334, 293, 300]
+            cheeks_idx_b = [234, 127, 162, 389, 356, 454]
+            face_only_indices = jaw_idx_b + brow_idx_b + cheeks_idx_b
+
+            if swap_scope == "face_only":
+                sub_pts = pts_b[face_only_indices].astype(np.int32)
+                inner_erode, outer_blur = 9, 17
+            else:  # full_head
+                head_indices = face_only_indices + [10, 338, 297, 332, 284, 251, 389, 109, 67, 103, 54, 21, 162, 127, 234]
+                sub_pts = pts_b[head_indices].astype(np.int32)
+                inner_erode, outer_blur = 11, 21
+
+            hull = cv2.convexHull(sub_pts)
+            mask_target = np.zeros((hb, wb), dtype=np.uint8)
+            cv2.fillConvexPoly(mask_target, hull, 255)
+
+            # 5. Échantillonnage de référence de peau sur B (cou / sous-menton)
+            chin_b = pts_b[152]
+            face_h_b = np.linalg.norm(chin_b - pts_b[10])
+            face_w_b = np.linalg.norm(pts_b[234] - pts_b[454])
+
+            neck_y1 = int(chin_b[1] + face_h_b * 0.05)
+            neck_y2 = int(min(hb, chin_b[1] + face_h_b * 0.45))
+            neck_x1 = int(max(0, chin_b[0] - face_w_b * 0.35))
+            neck_x2 = int(min(wb, chin_b[0] + face_w_b * 0.35))
+
+            neck_roi = b_bgr[neck_y1:neck_y2, neck_x1:neck_x2]
+            neck_ycrcb = cv2.cvtColor(neck_roi, cv2.COLOR_BGR2YCrCb) if neck_roi.size > 0 else None
+            if neck_ycrcb is not None:
+                skin_neck_mask = (neck_ycrcb[:, :, 1] >= 133) & (neck_ycrcb[:, :, 1] <= 175) & \
+                                 (neck_ycrcb[:, :, 2] >= 77) & (neck_ycrcb[:, :, 2] <= 130)
+                neck_pixels_bgr = neck_roi[skin_neck_mask]
+            else:
+                neck_pixels_bgr = np.array([])
+
+            if len(neck_pixels_bgr) < 50:
+                neck_pixels_bgr = neck_roi.reshape(-1, 3) if neck_roi.size > 0 else b_bgr.reshape(-1, 3)
+
+            neck_lab = cv2.cvtColor(neck_pixels_bgr.reshape(1, -1, 3), cv2.COLOR_BGR2LAB).reshape(-1, 3).astype(float)
+            mu_b_lab = np.mean(neck_lab, axis=0)
+            std_b_lab = np.std(neck_lab, axis=0)
+
+            # 6. Protection stricte des yeux, lèvres et monture de lunettes
+            left_eye_pts = pts_a_norm[[33, 7, 163, 144, 145, 153, 154, 155, 133]]
+            right_eye_pts = pts_a_norm[[362, 382, 381, 380, 374, 373, 390, 249, 263]]
+            mouth_pts = pts_a_norm[[61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 146, 91, 181, 84, 17, 314, 405, 321, 375]]
+
+            feat_mask = np.zeros((hb, wb), dtype=np.uint8)
+            cv2.fillConvexPoly(feat_mask, cv2.convexHull(left_eye_pts.astype(np.int32)), 255)
+            cv2.fillConvexPoly(feat_mask, cv2.convexHull(right_eye_pts.astype(np.int32)), 255)
+            cv2.fillConvexPoly(feat_mask, cv2.convexHull(mouth_pts.astype(np.int32)), 255)
+            feat_mask = cv2.dilate(feat_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)), iterations=1)
+
+            warped_ycrcb = cv2.cvtColor(warped_norm, cv2.COLOR_BGR2YCrCb)
+            skin_a_raw = (warped_ycrcb[:, :, 1] >= 130) & (warped_ycrcb[:, :, 1] <= 180) & \
+                         (warped_ycrcb[:, :, 2] >= 75) & (warped_ycrcb[:, :, 2] <= 135) & \
+                         (mask_target > 0) & (feat_mask == 0)
+
+            gray_a = cv2.cvtColor(warped_norm, cv2.COLOR_BGR2GRAY)
+            skin_a_mask = skin_a_raw & (gray_a >= 55)
+            skin_a_pixels_bgr = warped_norm[skin_a_mask]
+
+            if len(skin_a_pixels_bgr) > 50:
+                skin_a_lab = cv2.cvtColor(skin_a_pixels_bgr.reshape(1, -1, 3), cv2.COLOR_BGR2LAB).reshape(-1, 3).astype(float)
+                mu_a_lab = np.mean(skin_a_lab, axis=0)
+                std_a_lab = np.std(skin_a_lab, axis=0)
+            else:
+                mu_a_lab, std_a_lab = mu_b_lab.copy(), std_b_lab.copy()
+
+            # 7. Harmonisation locale en espace CIE-LAB
+            skin_weight = cv2.GaussianBlur(skin_a_mask.astype(float), (19, 19), 0)
+            warped_lab = cv2.cvtColor(warped_norm, cv2.COLOR_BGR2LAB).astype(float)
+            out_lab = warped_lab.copy()
+
+            for c in range(3):
+                scale_c = np.clip(std_b_lab[c] / (std_a_lab[c] + 1e-4), 0.75, 1.30)
+                full_shifted = (warped_lab[:, :, c] - mu_a_lab[c]) * scale_c + mu_b_lab[c]
+                w = np.clip(skin_weight * skin_strength, 0.0, 1.0)
+                out_lab[:, :, c] = warped_lab[:, :, c] * (1.0 - w) + full_shifted * w
+
+            harm_a_bgr = cv2.cvtColor(np.clip(out_lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2BGR)
+
+            # 8. Incrustation avec raccord progressif (Feathering)
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (inner_erode, inner_erode))
+            core_mask = cv2.erode(mask_target, kernel, iterations=1)
+            blurred = cv2.GaussianBlur(mask_target.astype(float), (outer_blur, outer_blur), 0) / 255.0
+            alpha = np.maximum(blurred, (core_mask / 255.0))
+            alpha_3d = np.stack([alpha] * 3, axis=-1)
+
+            composite_bgr = (harm_a_bgr * alpha_3d + b_bgr * (1.0 - alpha_3d)).astype(np.uint8)
+            composite_rgb = cv2.cvtColor(composite_bgr, cv2.COLOR_BGR2RGB)
+            final_img = Image.fromarray(composite_rgb)
+
+            # 9. Raffinement de contour optionnel (si diffusion demandée)
+            if strength and strength > 0.05:
+                seam_mask_np = np.clip((mask_target.astype(float) - core_mask.astype(float)) * 255.0, 0, 255).astype(np.uint8)
+                seam_mask_pil = Image.fromarray(seam_mask_np).filter(ImageFilter.GaussianBlur(radius=4))
+
+                buf_comp = io.BytesIO()
+                final_img.save(buf_comp, format="PNG")
+                comp_b64 = base64.b64encode(buf_comp.getvalue()).decode("utf-8")
+
+                buf_seam = io.BytesIO()
+                seam_mask_pil.save(buf_seam, format="PNG")
+                seam_b64 = base64.b64encode(buf_seam.getvalue()).decode("utf-8")
+
+                effective_strength = min(0.35, max(0.05, float(strength)))
+                seam_prompt = prompt.strip() if (prompt and prompt.strip()) else "high quality portrait, seamless skin transition, photorealistic"
+
+                out_bytes = inpaint_image(
+                    comp_b64,
+                    seam_b64,
+                    seam_prompt,
+                    strength=effective_strength,
+                    steps=steps or 20,
+                    model_hint=inpaint_file,
+                )
+                out_b64 = base64.b64encode(out_bytes).decode("utf-8")
+            else:
+                buf_out = io.BytesIO()
+                final_img.save(buf_out, format="PNG")
+                out_b64 = base64.b64encode(buf_out.getvalue()).decode("utf-8")
+
+            # Bounding box pour reporting
+            x_min_b, y_min_b = np.min(pts_b, axis=0)
+            x_max_b, y_max_b = np.max(pts_b, axis=0)
+            x_min_a, y_min_a = np.min(pts_a, axis=0)
+            x_max_a, y_max_a = np.max(pts_a, axis=0)
+
+            return {
+                "images": [out_b64],
+                "pipeline_type": meta["pipeline_type"],
+                "inpaint_model_used": os.path.basename(inpaint_file),
+                "ip_adapter_used": None,
+                "detector_used": "face_landmarker.task (MediaPipe R7 Proportion Normalization)",
+                "face_bbox": [round(float(v), 1) for v in [x_min_b, y_min_b, x_max_b, y_max_b]],
+                "face_a_bbox": [round(float(v), 1) for v in [x_min_a, y_min_a, x_max_a, y_max_a]],
+                "capability_detail": meta["capability_detail"],
+                "skin_harmonization_strength": skin_strength,
+                "swap_scope": swap_scope,
+                "info": f"Remplacement strict R7 : Pré-normalisation géométrique sur B ({swap_scope}) + Harmonisation cutanée",
+            }
+
+        except Exception as e:
+            print(f"[StrictFaceSwap R7] Avertissement MediaPipe ({e}), bascule vers pipeline géométrique standard...")
+            if "NO_FACE" in str(e):
+                raise
+
+    # Fallback standard YOLOv8 (au cas où MediaPipe ou OpenCV ne sont pas disponibles)
     img_a_512 = img_a.convert("RGB").resize((512, 512), Image.Resampling.LANCZOS)
     img_b_512 = img_b.convert("RGB").resize((512, 512), Image.Resampling.LANCZOS)
 
-    # 2. Détection du visage sur Image A (Source identité)
     dets_a = detect_face_yolov8(img_a_512, sd_cli_path, inpaint_file, detector_file)
     if not dets_a:
         raise ValueError("NO_FACE_IN_A: Remplacement strict du visage : aucun visage détecté dans l'Image A (source identité).")
     face_a = max(dets_a, key=lambda d: d["area"])
     bbox_a = face_a["bbox"]
 
-    # 3. Détection du visage sur Image B (Personnage cible)
     dets_b = detect_face_yolov8(img_b_512, sd_cli_path, inpaint_file, detector_file)
     if not dets_b:
         raise ValueError("NO_FACE_IN_B: Remplacement strict du visage : aucun visage détecté dans l'Image B (personnage cible).")
     face_b = max(dets_b, key=lambda d: d["area"])
     bbox_b = face_b["bbox"]
 
-    # 4. Découpe anatomique visage A
     ax1, ay1, ax2, ay2 = bbox_a
-    aw = ax2 - ax1
-    ah = ay2 - ay1
-    pad_xa = aw * 0.12
-    pad_ya = ah * 0.12
-    ca_x1 = max(0, int(ax1 - pad_xa))
-    ca_y1 = max(0, int(ay1 - pad_ya))
-    ca_x2 = min(512, int(ax2 + pad_xa))
-    ca_y2 = min(512, int(ay2 + pad_ya))
-    crop_a = img_a_512.crop((ca_x1, ca_y1, ca_x2, ca_y2))
+    aw, ah = ax2 - ax1, ay2 - ay1
+    crop_a = img_a_512.crop((max(0, int(ax1 - aw * 0.12)), max(0, int(ay1 - ah * 0.12)),
+                             min(512, int(ax2 + aw * 0.12)), min(512, int(ay2 + ah * 0.12))))
 
-    # 5. Zone cible sur Image B
     bx1, by1, bx2, by2 = bbox_b
-    bw = bx2 - bx1
-    bh = by2 - by1
-    pad_xb = bw * 0.12
-    pad_yb = bh * 0.12
-    cb_x1 = max(0, int(bx1 - pad_xb))
-    cb_y1 = max(0, int(by1 - pad_yb))
-    cb_x2 = min(512, int(bx2 + pad_xb))
-    cb_y2 = min(512, int(by2 + pad_yb))
+    bw, bh = bx2 - bx1, by2 - by1
+    cb_x1 = max(0, int(bx1 - bw * 0.12))
+    cb_y1 = max(0, int(by1 - bh * 0.12))
+    cb_x2 = min(512, int(bx2 + bw * 0.12))
+    cb_y2 = min(512, int(by2 + bh * 0.12))
     tw = max(16, cb_x2 - cb_x1)
     th = max(16, cb_y2 - cb_y1)
 
-    # 6. Redimensionnement et transfert colorimétrique Reinhard CIE-LAB
     crop_a_resized = crop_a.resize((tw, th), Image.Resampling.LANCZOS)
     crop_b = img_b_512.crop((cb_x1, cb_y1, cb_x2, cb_y2))
-
     matched_a_arr = transfer_color_reinhard(np.array(crop_a_resized), np.array(crop_b))
     matched_a_img = Image.fromarray(matched_a_arr)
 
-    # 7. Masque elliptique avec feathering doux
     feather_mask = Image.new("L", (tw, th), 0)
     draw_f = ImageDraw.Draw(feather_mask)
     draw_f.ellipse([int(tw * 0.05), int(th * 0.05), int(tw * 0.95), int(th * 0.95)], fill=255)
     blur_rad = max(4, int(min(tw, th) * 0.10))
     feather_mask = feather_mask.filter(ImageFilter.GaussianBlur(radius=blur_rad))
 
-    # 8. Incrustation sur l'Image B
     composite_b = img_b_512.copy()
     composite_b.paste(matched_a_img, (cb_x1, cb_y1), feather_mask)
 
-    # 9. Raffinement de contour/couture optionnel (seulement si strength > 0.05)
-    if strength and strength > 0.05:
-        full_mask = Image.new("L", (512, 512), 0)
-        full_mask.paste(feather_mask, (cb_x1, cb_y1))
-
-        kernel_size = max(3, (blur_rad // 2) * 2 + 1)
-        eroded = full_mask.filter(ImageFilter.MinFilter(size=kernel_size))
-        dilated = full_mask.filter(ImageFilter.MaxFilter(size=kernel_size))
-        seam_mask = ImageChops.subtract(dilated, eroded)
-        seam_mask = seam_mask.filter(ImageFilter.GaussianBlur(radius=4))
-
-        buf_comp = io.BytesIO()
-        composite_b.save(buf_comp, format="PNG")
-        comp_b64 = base64.b64encode(buf_comp.getvalue()).decode("utf-8")
-
-        buf_seam = io.BytesIO()
-        seam_mask.save(buf_seam, format="PNG")
-        seam_b64 = base64.b64encode(buf_seam.getvalue()).decode("utf-8")
-
-        effective_strength = min(0.35, max(0.05, float(strength)))
-        seam_prompt = prompt.strip() if (prompt and prompt.strip()) else "high quality portrait, seamless blending, photorealistic, natural skin texture"
-
-        out_bytes = inpaint_image(
-            comp_b64,
-            seam_b64,
-            seam_prompt,
-            strength=effective_strength,
-            steps=steps or 20,
-            model_hint=inpaint_file,
-        )
-        out_b64 = base64.b64encode(out_bytes).decode("utf-8")
-    else:
-        buf_out = io.BytesIO()
-        composite_b.save(buf_out, format="PNG")
-        out_b64 = base64.b64encode(buf_out.getvalue()).decode("utf-8")
+    buf_out = io.BytesIO()
+    composite_b.save(buf_out, format="PNG")
+    out_b64 = base64.b64encode(buf_out.getvalue()).decode("utf-8")
 
     return {
         "images": [out_b64],
@@ -1308,7 +1488,7 @@ def process_strict_face_swap(
         "face_bbox": [round(v, 1) for v in bbox_b],
         "face_a_bbox": [round(v, 1) for v in bbox_a],
         "capability_detail": meta["capability_detail"],
-        "info": "Remplacement strict du visage (Face Swap) effectué avec succès",
+        "info": "Remplacement strict du visage (Face Swap YOLOv8 fallback) effectué avec succès",
     }
 
 
@@ -1455,10 +1635,10 @@ def process_multi_image(image_a_b64: str, image_b_b64: str, mask_b64: str = "",
         if not detector_file:
             raise RuntimeError("DETECTOR_NOT_FOUND: Le modèle de détection 'face_yolov8n.safetensors' est introuvable sur le disque.")
 
-        print("[Multi-Image] Remplacement strict du visage (Face Swap)...")
+        print("[Multi-Image] Remplacement strict du visage (Face Swap R7)...")
         return process_strict_face_swap(
-            img_a=img_a_norm,
-            img_b=img_b_norm,
+            img_a=img_a.convert("RGB"),
+            img_b=img_b.convert("RGB"),
             strength=strength,
             steps=steps,
             prompt=prompt,

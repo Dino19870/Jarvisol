@@ -1,12 +1,33 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_all
 
+datas = []
+binaries = []
+hiddenimports = [
+    'cv2',
+    'numpy',
+    'psutil',
+    'PIL',
+    'PIL.Image',
+    'PIL.ImageDraw',
+    'PIL.ImageFont',
+    'PIL.ImageFilter',
+    'PIL.ImageStat',
+    'PIL.ImageChops',
+]
+
+for pkg in ['mediapipe', 'cv2']:
+    tmp_ret = collect_all(pkg)
+    datas += tmp_ret[0]
+    binaries += tmp_ret[1]
+    hiddenimports += tmp_ret[2]
 
 a = Analysis(
-    ['sd_server.py'],
+    ['D:/Antigravity/AgentFolder/CrisperWeaver/sd_server.py'],
     pathex=[],
-    binaries=[],
-    datas=[],
-    hiddenimports=[],
+    binaries=binaries,
+    datas=datas,
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -26,7 +47,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=True,
