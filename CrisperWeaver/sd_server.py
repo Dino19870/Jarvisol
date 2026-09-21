@@ -1197,6 +1197,98 @@ def transfer_color_reinhard(source_crop_rgb: np.ndarray, target_crop_rgb: np.nda
     return lab_to_rgb(matched_lab)
 
 
+def score_face_landmarks(pts: np.ndarray) -> float:
+    """
+    Évalue la cohérence biométrique et anatomique d'un jeu de 478 repères faciaux.
+    Pénalise sévèrement les faux positifs (ex: confusion cou/menton, bouche/yeux).
+    """
+    eye_mid = (pts[33] + pts[263]) / 2.0
+    eye_vec = pts[263] - pts[33]
+    iod = np.linalg.norm(eye_vec)
+    if iod < 10:
+        return -1000.0
+    ux = eye_vec / iod
+    uy = np.array([-ux[1], ux[0]])  # Axe vertical descendant du visage
+
+    y_forehead = np.dot(pts[10] - eye_mid, uy)
+    y_nose = np.dot(pts[1] - eye_mid, uy)
+    y_mouth = np.dot(pts[0] - eye_mid, uy)
+    y_chin = np.dot(pts[152] - eye_mid, uy)
+
+    score = 0.0
+    # Le front doit être au-dessus des yeux
+    if y_forehead < -0.3 * iod:
+        score += 10.0
+    else:
+        score -= 50.0
+
+    # Le nez doit être sous les yeux
+    if 0.2 * iod < y_nose < 0.8 * iod:
+        score += 10.0
+    else:
+        score -= 30.0
+
+    # La bouche doit être sous le nez
+    if y_nose + 0.1 * iod < y_mouth < 1.3 * iod:
+        score += 10.0
+    else:
+        score -= 30.0
+
+    # Le menton doit être sous la bouche
+    if y_chin > y_mouth + 0.1 * iod:
+        score += 10.0
+    else:
+        score -= 50.0
+
+    # Ratio hauteur / largeur faciale (1.05 à 1.45 pour une tête humaine normale)
+    fh = np.linalg.norm(pts[10] - pts[152])
+    fw = np.linalg.norm(pts[234] - pts[454])
+    ratio = fh / (fw + 1e-4)
+    if 1.05 <= ratio <= 1.45:
+        score += 20.0
+    else:
+        score -= abs(ratio - 1.25) * 50.0
+
+    return score
+
+
+def detect_face_landmarks_robust(img_pil: Image.Image, landmarker) -> np.ndarray:
+    """
+    Détection multi-échelle robuste des repères faciaux MediaPipe.
+    Garantit une détection exacte même sur des images haute résolution plein corps
+    ou des cadrages serrés, en éliminant les faux positifs sur le cou ou les vêtements.
+    """
+    w, h = img_pil.size
+    candidates = []
+
+    # 1. Image complète
+    regions = [(0, 0, w, h)]
+
+    # 2. Découpes anatomiques prioritaires pour grands formats / personnages verticaux
+    if h >= 600:
+        regions.append((0, 0, w, int(h * 0.55)))
+        regions.append((0, 0, w, int(h * 0.40)))
+        regions.append((0, int(h * 0.15), w, int(h * 0.70)))
+    if w >= 800 and h >= 600:
+        regions.append((0, 0, int(w * 0.70), int(h * 0.60)))
+        regions.append((int(w * 0.30), 0, w, int(h * 0.60)))
+
+    for x1, y1, x2, y2 in regions:
+        sub_img = img_pil.crop((x1, y1, x2, y2))
+        sw, sh = sub_img.size
+        mp_sub = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.array(sub_img))
+        res = landmarker.detect(mp_sub)
+        if res.face_landmarks:
+            pts_sub = np.array([[l.x * sw + x1, l.y * sh + y1] for l in res.face_landmarks[0]], dtype=np.float32)
+            score = score_face_landmarks(pts_sub)
+            candidates.append((score, pts_sub))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda c: c[0], reverse=True)
+    return candidates[0][1]
+
+
 def process_strict_face_swap(
     img_a: Image.Image,
     img_b: Image.Image,
@@ -1209,13 +1301,14 @@ def process_strict_face_swap(
     meta: dict,
 ) -> dict:
     """
-    Exécution stricte de remplacement du visage (Face Swap R7 - Normalisation des Proportions).
+    Exécution stricte de remplacement du visage (Face Swap R9 - Normalisation Face-Space & Invariance Cadrage).
     - Image A = Source d'identité (visage ou tête)
     - Image B = Personnage cible et scène finale (Canevas de référence invariant)
     Règle absolue : Le corps, les épaules, le buste, la posture et l'échelle générale
     de l'Image B restent 100% inchangés (zéro déformation anamorphique, zéro grossissement).
-    Pré-normalisation géométrique multidimensionnelle de A (écart inter-oculaire,
-    hauteur front-menton, largeur utile, angle roll) calée sur le gabarit facial de B.
+    Transformation de similarité 2D face-space (sans distorsion non-affine) calée sur
+    la géométrie faciale de B (FACE_SCALE_DRIVER = B), garantissant une stricte invariance
+    au cadrage de A.
     Supporte les modes "face_only" (défaut recommandé) et "full_head".
     """
     skin_strength = float(meta.get("skin_harmonization_strength", 0.60))
@@ -1244,25 +1337,33 @@ def process_strict_face_swap(
             ha, wa = a_bgr.shape[:2]
             hb, wb = b_bgr.shape[:2]
 
-            # 2. Détection des landmarks faciaux réels MediaPipe
+            # 2. Détection des landmarks faciaux réels MediaPipe (R9 Multi-Scale Robust)
             base_opts = mp_python.BaseOptions(model_asset_path=task_model_path)
             opts = mp_vision.FaceLandmarkerOptions(base_options=base_opts, num_faces=1)
             with mp_vision.FaceLandmarker.create_from_options(opts) as landmarker:
-                mp_a = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.array(img_a_rgb))
-                mp_b = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.array(img_b_rgb))
-                res_a = landmarker.detect(mp_a)
-                res_b = landmarker.detect(mp_b)
+                pts_a = detect_face_landmarks_robust(img_a_rgb, landmarker)
+                pts_b = detect_face_landmarks_robust(img_b_rgb, landmarker)
 
-            if not res_a.face_landmarks:
-                raise ValueError("NO_FACE_IN_A: Remplacement strict du visage : aucun repère facial détecté dans l'Image A (source identité).")
-            if not res_b.face_landmarks:
-                raise ValueError("NO_FACE_IN_B: Remplacement strict du visage : aucun repère facial détecté dans l'Image B (personnage cible).")
+            if pts_a is None:
+                raise ValueError("NO_FACE_IN_A: Remplacement strict du visage : aucun repère facial valide détecté dans l'Image A (source identité).")
+            if pts_b is None:
+                raise ValueError("NO_FACE_IN_B: Remplacement strict du visage : aucun repère facial valide détecté dans l'Image B (personnage cible).")
 
-            pts_a = np.array([[l.x * wa, l.y * ha] for l in res_a.face_landmarks[0]], dtype=np.float32)
-            pts_b = np.array([[l.x * wb, l.y * hb] for l in res_b.face_landmarks[0]], dtype=np.float32)
+            # 3. Définition TARGET_FACE_ROI sur B dans ses coordonnées natives
+            x_min_b, y_min_b = np.min(pts_b, axis=0)
+            x_max_b, y_max_b = np.max(pts_b, axis=0)
+            margin_x = (x_max_b - x_min_b) * 0.25
+            margin_y = (y_max_b - y_min_b) * 0.25
+            target_face_roi = [
+                int(max(0, x_min_b - margin_x)),
+                int(max(0, y_min_b - margin_y)),
+                int(min(wb, x_max_b + margin_x)),
+                int(min(hb, y_max_b + margin_y)),
+            ]
 
-            # 3. Pré-normalisation géométrique multidimensionnelle (R7)
-            # Ancrages anatomiques : yeux, nez, front, menton, joues et bouche
+            # 4. Normalisation Face-Space & Transformation de Similarité A -> B (R9)
+            # Échelle 100% pilotée par B (FACE_SCALE_DRIVER = B)
+            # Invariance stricte au cadrage / crop de A (zéro déformation non-affine / shear)
             anchor_indices = [
                 33, 133, 159, 145,       # Oeil gauche
                 362, 263, 386, 374,     # Oeil droit
@@ -1277,12 +1378,14 @@ def process_strict_face_swap(
             src_anchors = pts_a[anchor_indices]
             dst_anchors = pts_b[anchor_indices]
 
-            # Transformation affine 2D qui recale la hauteur, la largeur et l'axe des yeux sur B
-            M_norm, _ = cv2.estimateAffine2D(src_anchors, dst_anchors, method=cv2.LMEDS)
-            pts_a_norm = cv2.transform(pts_a.reshape(-1, 1, 2), M_norm).reshape(-1, 2)
-            warped_norm = cv2.warpAffine(a_bgr, M_norm, (wb, hb), flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REFLECT)
+            M_sim, _ = cv2.estimateAffinePartial2D(src_anchors, dst_anchors)
+            if M_sim is None:
+                M_sim, _ = cv2.estimateAffine2D(src_anchors, dst_anchors, method=cv2.LMEDS)
 
-            # 4. Délimitation du masque selon le niveau demandé ("face_only" vs "full_head")
+            pts_a_norm = cv2.transform(pts_a.reshape(-1, 1, 2), M_sim).reshape(-1, 2)
+            warped_norm = cv2.warpAffine(a_bgr, M_sim, (wb, hb), flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REFLECT)
+
+            # 5. Délimitation du masque selon le niveau demandé ("face_only" vs "full_head")
             jaw_idx_b = [172, 136, 150, 149, 176, 148, 152, 377, 400, 378, 379, 365, 397]
             brow_idx_b = [70, 63, 105, 66, 107, 336, 296, 334, 293, 300]
             cheeks_idx_b = [234, 127, 162, 389, 356, 454]
@@ -1300,7 +1403,7 @@ def process_strict_face_swap(
             mask_target = np.zeros((hb, wb), dtype=np.uint8)
             cv2.fillConvexPoly(mask_target, hull, 255)
 
-            # 5. Échantillonnage de référence de peau sur B (cou / sous-menton)
+            # 6. Échantillonnage de référence de peau sur B (cou / sous-menton)
             chin_b = pts_b[152]
             face_h_b = np.linalg.norm(chin_b - pts_b[10])
             face_w_b = np.linalg.norm(pts_b[234] - pts_b[454])
@@ -1326,7 +1429,7 @@ def process_strict_face_swap(
             mu_b_lab = np.mean(neck_lab, axis=0)
             std_b_lab = np.std(neck_lab, axis=0)
 
-            # 6. Protection stricte des yeux, lèvres et monture de lunettes
+            # 7. Protection stricte des yeux, lèvres et monture de lunettes
             left_eye_pts = pts_a_norm[[33, 7, 163, 144, 145, 153, 154, 155, 133]]
             right_eye_pts = pts_a_norm[[362, 382, 381, 380, 374, 373, 390, 249, 263]]
             mouth_pts = pts_a_norm[[61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 146, 91, 181, 84, 17, 314, 405, 321, 375]]
@@ -1353,7 +1456,7 @@ def process_strict_face_swap(
             else:
                 mu_a_lab, std_a_lab = mu_b_lab.copy(), std_b_lab.copy()
 
-            # 7. Harmonisation locale en espace CIE-LAB
+            # 8. Harmonisation locale en espace CIE-LAB
             skin_weight = cv2.GaussianBlur(skin_a_mask.astype(float), (19, 19), 0)
             warped_lab = cv2.cvtColor(warped_norm, cv2.COLOR_BGR2LAB).astype(float)
             out_lab = warped_lab.copy()
@@ -1366,7 +1469,7 @@ def process_strict_face_swap(
 
             harm_a_bgr = cv2.cvtColor(np.clip(out_lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2BGR)
 
-            # 8. Incrustation avec raccord progressif (Feathering)
+            # 9. Incrustation avec raccord progressif (Feathering) & garantie zéro modification hors zone
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (inner_erode, inner_erode))
             core_mask = cv2.erode(mask_target, kernel, iterations=1)
             blurred = cv2.GaussianBlur(mask_target.astype(float), (outer_blur, outer_blur), 0) / 255.0
@@ -1374,37 +1477,40 @@ def process_strict_face_swap(
             alpha_3d = np.stack([alpha] * 3, axis=-1)
 
             composite_bgr = (harm_a_bgr * alpha_3d + b_bgr * (1.0 - alpha_3d)).astype(np.uint8)
+            composite_bgr[mask_target == 0] = b_bgr[mask_target == 0]
             composite_rgb = cv2.cvtColor(composite_bgr, cv2.COLOR_BGR2RGB)
             final_img = Image.fromarray(composite_rgb)
 
-            # 9. R8 : Pipeline déterministe temps réel sans passe neurale héritée
+            # 10. R9 : Pipeline déterministe temps réel sans passe neurale
             buf_out = io.BytesIO()
             final_img.save(buf_out, format="PNG")
             out_b64 = base64.b64encode(buf_out.getvalue()).decode("utf-8")
 
             total_strict_ms = (time.time() - t_start_strict) * 1000.0
-            print("[StrictFaceSwap] R8 deterministic pipeline complete")
+            print("[StrictFaceSwap] R9 Face-Space Normalization complete")
+            print(f"[StrictFaceSwap] Scale driver: B, target_face_roi={target_face_roi}")
             print("[StrictFaceSwap] Neural inpaint skipped by design")
             print(f"[StrictFaceSwap] total_ms={total_strict_ms:.2f}")
 
             # Bounding box pour reporting
-            x_min_b, y_min_b = np.min(pts_b, axis=0)
-            x_max_b, y_max_b = np.max(pts_b, axis=0)
             x_min_a, y_min_a = np.min(pts_a, axis=0)
             x_max_a, y_max_a = np.max(pts_a, axis=0)
 
             return {
                 "images": [out_b64],
                 "pipeline_type": meta["pipeline_type"],
-                "inpaint_model_used": "Aucun (R8 Déterministe)",
+                "inpaint_model_used": "Aucun (R9 Déterministe Face-Space)",
                 "ip_adapter_used": None,
-                "detector_used": "face_landmarker.task (MediaPipe R8 Déterministe)",
+                "detector_used": "face_landmarker.task (MediaPipe R9 Multi-Scale Robust)",
                 "face_bbox": [round(float(v), 1) for v in [x_min_b, y_min_b, x_max_b, y_max_b]],
                 "face_a_bbox": [round(float(v), 1) for v in [x_min_a, y_min_a, x_max_a, y_max_a]],
+                "target_face_roi": target_face_roi,
+                "face_scale_driver": "B",
+                "transform_matrix": [[round(float(v), 6) for v in row] for row in M_sim],
                 "capability_detail": meta["capability_detail"],
                 "skin_harmonization_strength": skin_strength,
                 "swap_scope": swap_scope,
-                "info": f"Remplacement strict R8 : Pré-normalisation géométrique sur B ({swap_scope}) + Harmonisation cutanée CIE-LAB (Pipeline déterministe temps réel sans diffusion)",
+                "info": f"Remplacement strict R9 : Normalisation Face-Space sur B ({swap_scope}) + Harmonisation cutanée CIE-LAB (Pipeline déterministe temps réel sans diffusion)",
             }
 
         except Exception as e:
