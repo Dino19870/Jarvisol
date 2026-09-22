@@ -1385,109 +1385,98 @@ def process_strict_face_swap(
             pts_a_norm = cv2.transform(pts_a.reshape(-1, 1, 2), M_sim).reshape(-1, 2)
             warped_norm = cv2.warpAffine(a_bgr, M_sim, (wb, hb), flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REFLECT)
 
-            # 5. Délimitation du masque selon le niveau demandé ("face_only" vs "full_head")
-            jaw_idx_b = [172, 136, 150, 149, 176, 148, 152, 377, 400, 378, 379, 365, 397]
-            brow_idx_b = [70, 63, 105, 66, 107, 336, 296, 334, 293, 300]
-            cheeks_idx_b = [234, 127, 162, 389, 356, 454]
-            face_only_indices = jaw_idx_b + brow_idx_b + cheeks_idx_b
+            # 5. Délimitation anatomique du masque facial R10 (Périmètre ordonné 36 repères)
+            # Élimine la convex hull ballon qui débordait sur les oreilles, cheveux et arrière-plans.
+            FACE_OVAL_ORDER = [
+                10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 
+                152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109
+            ]
+            brow_indices_b = [70, 63, 105, 66, 107, 55, 65, 52, 53, 46, 336, 296, 334, 293, 300, 276, 283, 282, 295, 285]
 
-            if swap_scope == "face_only":
-                sub_pts = pts_b[face_only_indices].astype(np.int32)
-                inner_erode, outer_blur = 9, 17
-            else:  # full_head
-                head_indices = face_only_indices + [10, 338, 297, 332, 284, 251, 389, 109, 67, 103, 54, 21, 162, 127, 234]
-                sub_pts = pts_b[head_indices].astype(np.int32)
-                inner_erode, outer_blur = 11, 21
+            # Masque anatomique de la cible B
+            poly_b = pts_b[FACE_OVAL_ORDER].astype(np.int32)
+            mask_b = np.zeros((hb, wb), dtype=np.uint8)
+            cv2.fillPoly(mask_b, [poly_b], 255)
 
-            hull = cv2.convexHull(sub_pts)
-            mask_target = np.zeros((hb, wb), dtype=np.uint8)
-            cv2.fillConvexPoly(mask_target, hull, 255)
+            # Masque anatomique de la source A dans l'espace normalisé de B
+            poly_a = pts_a_norm[FACE_OVAL_ORDER].astype(np.int32)
+            mask_a = np.zeros((hb, wb), dtype=np.uint8)
+            cv2.fillPoly(mask_a, [poly_a], 255)
 
-            # 6. Échantillonnage de référence de peau sur B (cou / sous-menton)
-            chin_b = pts_b[152]
-            face_h_b = np.linalg.norm(chin_b - pts_b[10])
-            face_w_b = np.linalg.norm(pts_b[234] - pts_b[454])
+            # Intersection stricte : garantit 0 débordement sur les oreilles de B et 0 inclusion du fond/vêtements de A
+            mask_inter = cv2.bitwise_and(mask_b, mask_a)
 
-            neck_y1 = int(chin_b[1] + face_h_b * 0.05)
-            neck_y2 = int(min(hb, chin_b[1] + face_h_b * 0.45))
-            neck_x1 = int(max(0, chin_b[0] - face_w_b * 0.35))
-            neck_x2 = int(min(wb, chin_b[0] + face_w_b * 0.35))
+            # Érosion douce pour garantir un raccord 100% intra-cutané
+            erode_k = 5 if swap_scope == "face_only" else 7
+            mask_target = cv2.erode(mask_inter, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erode_k, erode_k)), iterations=1)
 
-            neck_roi = b_bgr[neck_y1:neck_y2, neck_x1:neck_x2]
-            neck_ycrcb = cv2.cvtColor(neck_roi, cv2.COLOR_BGR2YCrCb) if neck_roi.size > 0 else None
-            if neck_ycrcb is not None:
-                skin_neck_mask = (neck_ycrcb[:, :, 1] >= 133) & (neck_ycrcb[:, :, 1] <= 175) & \
-                                 (neck_ycrcb[:, :, 2] >= 77) & (neck_ycrcb[:, :, 2] <= 130)
-                neck_pixels_bgr = neck_roi[skin_neck_mask]
-            else:
-                neck_pixels_bgr = np.array([])
+            # 6. Élimination préventive des sourcils fantômes de B par inpainting intra-cutané local
+            brow_hull_b = cv2.convexHull(pts_b[brow_indices_b].astype(np.int32))
+            brow_mask_b = np.zeros((hb, wb), dtype=np.uint8)
+            cv2.fillConvexPoly(brow_mask_b, brow_hull_b, 255)
+            brow_mask_b = cv2.dilate(brow_mask_b, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)), iterations=1)
+            b_clean = cv2.inpaint(b_bgr, brow_mask_b, 5, cv2.INPAINT_TELEA)
 
-            if len(neck_pixels_bgr) < 50:
-                neck_pixels_bgr = neck_roi.reshape(-1, 3) if neck_roi.size > 0 else b_bgr.reshape(-1, 3)
+            # 7. Harmonisation colorimétrique globale en espace CIE-LAB
+            b_pix = b_bgr[mask_target > 0]
+            a_pix = warped_norm[mask_target > 0]
+            if len(b_pix) < 50 or len(a_pix) < 50:
+                b_pix = b_bgr.reshape(-1, 3)
+                a_pix = warped_norm.reshape(-1, 3)
 
-            neck_lab = cv2.cvtColor(neck_pixels_bgr.reshape(1, -1, 3), cv2.COLOR_BGR2LAB).reshape(-1, 3).astype(float)
-            mu_b_lab = np.mean(neck_lab, axis=0)
-            std_b_lab = np.std(neck_lab, axis=0)
+            b_lab = cv2.cvtColor(b_pix.reshape(1, -1, 3), cv2.COLOR_BGR2LAB).reshape(-1, 3).astype(float)
+            a_lab = cv2.cvtColor(a_pix.reshape(1, -1, 3), cv2.COLOR_BGR2LAB).reshape(-1, 3).astype(float)
 
-            # 7. Protection stricte des yeux, lèvres et monture de lunettes
-            left_eye_pts = pts_a_norm[[33, 7, 163, 144, 145, 153, 154, 155, 133]]
-            right_eye_pts = pts_a_norm[[362, 382, 381, 380, 374, 373, 390, 249, 263]]
-            mouth_pts = pts_a_norm[[61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 146, 91, 181, 84, 17, 314, 405, 321, 375]]
+            mu_b, std_b = np.mean(b_lab, axis=0), np.std(b_lab, axis=0)
+            mu_a, std_a = np.mean(a_lab, axis=0), np.std(a_lab, axis=0)
 
-            feat_mask = np.zeros((hb, wb), dtype=np.uint8)
-            cv2.fillConvexPoly(feat_mask, cv2.convexHull(left_eye_pts.astype(np.int32)), 255)
-            cv2.fillConvexPoly(feat_mask, cv2.convexHull(right_eye_pts.astype(np.int32)), 255)
-            cv2.fillConvexPoly(feat_mask, cv2.convexHull(mouth_pts.astype(np.int32)), 255)
-            feat_mask = cv2.dilate(feat_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)), iterations=1)
-
-            warped_ycrcb = cv2.cvtColor(warped_norm, cv2.COLOR_BGR2YCrCb)
-            skin_a_raw = (warped_ycrcb[:, :, 1] >= 130) & (warped_ycrcb[:, :, 1] <= 180) & \
-                         (warped_ycrcb[:, :, 2] >= 75) & (warped_ycrcb[:, :, 2] <= 135) & \
-                         (mask_target > 0) & (feat_mask == 0)
-
-            gray_a = cv2.cvtColor(warped_norm, cv2.COLOR_BGR2GRAY)
-            skin_a_mask = skin_a_raw & (gray_a >= 55)
-            skin_a_pixels_bgr = warped_norm[skin_a_mask]
-
-            if len(skin_a_pixels_bgr) > 50:
-                skin_a_lab = cv2.cvtColor(skin_a_pixels_bgr.reshape(1, -1, 3), cv2.COLOR_BGR2LAB).reshape(-1, 3).astype(float)
-                mu_a_lab = np.mean(skin_a_lab, axis=0)
-                std_a_lab = np.std(skin_a_lab, axis=0)
-            else:
-                mu_a_lab, std_a_lab = mu_b_lab.copy(), std_b_lab.copy()
-
-            # 8. Harmonisation locale en espace CIE-LAB
-            skin_weight = cv2.GaussianBlur(skin_a_mask.astype(float), (19, 19), 0)
             warped_lab = cv2.cvtColor(warped_norm, cv2.COLOR_BGR2LAB).astype(float)
-            out_lab = warped_lab.copy()
-
+            harm_lab = warped_lab.copy()
             for c in range(3):
-                scale_c = np.clip(std_b_lab[c] / (std_a_lab[c] + 1e-4), 0.75, 1.30)
-                full_shifted = (warped_lab[:, :, c] - mu_a_lab[c]) * scale_c + mu_b_lab[c]
-                w = np.clip(skin_weight * skin_strength, 0.0, 1.0)
-                out_lab[:, :, c] = warped_lab[:, :, c] * (1.0 - w) + full_shifted * w
+                scale_c = np.clip(std_b[c] / (std_a[c] + 1e-4), 0.70, 1.35)
+                shifted_c = (warped_lab[:, :, c] - mu_a[c]) * scale_c + mu_b[c]
+                harm_lab[:, :, c] = warped_lab[:, :, c] * (1.0 - skin_strength) + shifted_c * skin_strength
+            harm_a_bgr = cv2.cvtColor(np.clip(harm_lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2BGR)
 
-            harm_a_bgr = cv2.cvtColor(np.clip(out_lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2BGR)
+            # 8. Incrustation par clonage sans couture de Poisson (continuité mathématique de gradient aux frontières)
+            x_m, y_m, w_m, h_m = cv2.boundingRect(mask_target)
+            center = (int(x_m + w_m / 2), int(y_m + h_m / 2))
 
-            # 9. Incrustation avec raccord progressif (Feathering) & garantie zéro modification hors zone
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (inner_erode, inner_erode))
-            core_mask = cv2.erode(mask_target, kernel, iterations=1)
-            blurred = cv2.GaussianBlur(mask_target.astype(float), (outer_blur, outer_blur), 0) / 255.0
-            alpha = np.maximum(blurred, (core_mask / 255.0))
-            alpha_3d = np.stack([alpha] * 3, axis=-1)
+            try:
+                composite_bgr = cv2.seamlessClone(harm_a_bgr, b_clean, mask_target, center, cv2.NORMAL_CLONE)
+            except Exception as e:
+                print(f"[StrictFaceSwap] seamlessClone fallback: {e}")
+                alpha_soft = cv2.GaussianBlur(mask_target.astype(float) / 255.0, (21, 21), 0)
+                alpha_3d = np.stack([alpha_soft] * 3, axis=-1)
+                composite_bgr = (harm_a_bgr * alpha_3d + b_clean * (1.0 - alpha_3d)).astype(np.uint8)
 
-            composite_bgr = (harm_a_bgr * alpha_3d + b_bgr * (1.0 - alpha_3d)).astype(np.uint8)
-            composite_bgr[mask_target == 0] = b_bgr[mask_target == 0]
+            # 9. Préservation nette des montures de lunettes et accessoires sombres haute fréquence
+            gray_harm = cv2.cvtColor(harm_a_bgr, cv2.COLOR_BGR2GRAY)
+            eye_region_pts = pts_a_norm[[33, 130, 246, 161, 160, 159, 158, 157, 173, 133, 155, 154, 153, 145, 144, 163, 7, 
+                                         362, 398, 384, 385, 386, 387, 388, 466, 263, 249, 390, 373, 374, 380, 381, 382]]
+            eye_zone = np.zeros((hb, wb), dtype=np.uint8)
+            cv2.fillConvexPoly(eye_zone, cv2.convexHull(eye_region_pts.astype(np.int32)), 255)
+            eye_zone = cv2.dilate(eye_zone, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25)), iterations=1)
+
+            frame_mask = (gray_harm < 85) & (eye_zone > 0) & (mask_target > 0)
+            if np.any(frame_mask):
+                frame_weight = cv2.GaussianBlur(frame_mask.astype(float), (5, 5), 0)
+                for c in range(3):
+                    composite_bgr[:, :, c] = (composite_bgr[:, :, c] * (1.0 - frame_weight) + harm_a_bgr[:, :, c] * frame_weight).astype(np.uint8)
+
+            # Garantie absolue : aucun pixel modifié hors de la zone faciale / sourcils
+            face_combined_zone = cv2.bitwise_or(mask_inter, brow_mask_b)
+            composite_bgr[face_combined_zone == 0] = b_bgr[face_combined_zone == 0]
             composite_rgb = cv2.cvtColor(composite_bgr, cv2.COLOR_BGR2RGB)
             final_img = Image.fromarray(composite_rgb)
 
-            # 10. R9 : Pipeline déterministe temps réel sans passe neurale
+            # 10. R10 : Pipeline déterministe temps réel sans passe neurale
             buf_out = io.BytesIO()
             final_img.save(buf_out, format="PNG")
             out_b64 = base64.b64encode(buf_out.getvalue()).decode("utf-8")
 
             total_strict_ms = (time.time() - t_start_strict) * 1000.0
-            print("[StrictFaceSwap] R9 Face-Space Normalization complete")
+            print("[StrictFaceSwap] R10 Seamless Poisson Blending complete")
             print(f"[StrictFaceSwap] Scale driver: B, target_face_roi={target_face_roi}")
             print("[StrictFaceSwap] Neural inpaint skipped by design")
             print(f"[StrictFaceSwap] total_ms={total_strict_ms:.2f}")
@@ -1499,9 +1488,9 @@ def process_strict_face_swap(
             return {
                 "images": [out_b64],
                 "pipeline_type": meta["pipeline_type"],
-                "inpaint_model_used": "Aucun (R9 Déterministe Face-Space)",
+                "inpaint_model_used": "Aucun (R10 Déterministe Seamless Poisson)",
                 "ip_adapter_used": None,
-                "detector_used": "face_landmarker.task (MediaPipe R9 Multi-Scale Robust)",
+                "detector_used": "face_landmarker.task (MediaPipe R10 Multi-Scale Robust)",
                 "face_bbox": [round(float(v), 1) for v in [x_min_b, y_min_b, x_max_b, y_max_b]],
                 "face_a_bbox": [round(float(v), 1) for v in [x_min_a, y_min_a, x_max_a, y_max_a]],
                 "target_face_roi": target_face_roi,
@@ -1510,7 +1499,7 @@ def process_strict_face_swap(
                 "capability_detail": meta["capability_detail"],
                 "skin_harmonization_strength": skin_strength,
                 "swap_scope": swap_scope,
-                "info": f"Remplacement strict R9 : Normalisation Face-Space sur B ({swap_scope}) + Harmonisation cutanée CIE-LAB (Pipeline déterministe temps réel sans diffusion)",
+                "info": f"Remplacement strict R10 : Masque anatomique périmétrique sur B ({swap_scope}) + Clonage Poisson sans couture + Harmonisation CIE-LAB (Pipeline déterministe temps réel sans diffusion)",
             }
 
         except Exception as e:

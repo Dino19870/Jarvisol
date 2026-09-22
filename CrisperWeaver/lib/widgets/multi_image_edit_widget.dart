@@ -67,12 +67,12 @@ enum MultiImageEditMode {
   ),
   strictFaceSwap(
     id: 'strict_face_swap',
-    label: 'Remplacement strict du visage (Face Swap R8)',
+    label: 'Remplacement strict du visage (Face Swap R10)',
     badgeText: 'FACE SWAP DÉTERMINISTE',
-    description: 'Pipeline déterministe temps réel : préservation morphologique 100% de A, ancrage géométrique sur B, harmonisation cutanée CIE-LAB, raccord local sans diffusion neuronale.',
+    description: 'Pipeline déterministe haute fidélité : préservation morphologique 100% de A, contours anatomiques faciaux, élimination des artefacts d\'oreilles/cheveux/lunettes, harmonisation CIE-LAB et clonage de Poisson.',
     isFullySupported: true,
-    capabilityLabel: 'PIPELINE DÉTERMINISTE R8',
-    capabilityDetail: 'Préservation morphologique exacte (MediaPipe 478 pts), ancrage strict de la silhouette de B, harmonisation cutanée CIE-LAB et incrustation progressive sans diffusion neuronale.',
+    capabilityLabel: 'PIPELINE DÉTERMINISTE R10',
+    capabilityDetail: 'Préservation morphologique exacte (MediaPipe 478 pts), contours anatomiques stricts, harmonisation cutanée CIE-LAB et clonage sans couture (Poisson blending) sans diffusion neuronale.',
     defaultPrompt: '',
     defaultStrength: 0.0,
   );
@@ -555,7 +555,17 @@ class _MultiImageEditWidgetState extends ConsumerState<MultiImageEditWidget> {
                         style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
                       ),
                       const Spacer(),
-                      if (_selectedInpaintModel.contains('Realistic_Vision') || _selectedInpaintModel.contains('v1-5'))
+                      if (_selectedMode == MultiImageEditMode.strictFaceSwap)
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: Colors.blueGrey.withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(color: Colors.blueGrey),
+                          ),
+                          child: const Text('NON REQUIS (MODE DÉTERMINISTE SANS DIFFUSION)', style: TextStyle(color: Colors.blueGrey, fontSize: 10, fontWeight: FontWeight.bold)),
+                        )
+                      else if (_selectedInpaintModel.contains('Realistic_Vision') || _selectedInpaintModel.contains('v1-5'))
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                           decoration: BoxDecoration(
@@ -766,7 +776,7 @@ class _MultiImageEditWidgetState extends ConsumerState<MultiImageEditWidget> {
                         const Icon(Icons.flash_on, color: Colors.green, size: 20),
                         const SizedBox(width: 8),
                         Text(
-                          'Pipeline Déterministe R8 (Temps réel sans diffusion) :',
+                          'Pipeline Déterministe R10 (Temps réel sans diffusion) :',
                           style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold, color: Colors.green.shade800),
                         ),
                       ],
@@ -785,9 +795,12 @@ class _MultiImageEditWidgetState extends ConsumerState<MultiImageEditWidget> {
                           Text(
                             '• Préservation morphologique intégrale du visage source (MediaPipe 478 repères)\n'
                             '• Ancrage géométrique strict et silhouette invariante de l\'Image B (0 déformation)\n'
-                            '• Harmonisation cutanée dans l\'espace colorimétrique CIE-LAB\n'
-                            '• Raccord local et incrustation progressive sans démarcation\n'
-                            '• Aucune diffusion neuronale du visage : exécution instantanée, réglages de prompt et steps inopérants.',
+                            '• Masque facial anatomique 36 repères (respect absolu des oreilles, cheveux et contours latéraux)\n'
+                            '• Élimination préventive des sourcils fantômes par inpainting cutané local sur la cible\n'
+                            '• Harmonisation colorimétrique globale dans l\'espace CIE-LAB\n'
+                            '• Incrustation par clonage sans couture de Poisson (continuité mathématique de gradient aux frontières)\n'
+                            '• Préservation nette et sans affaiblissement des lunettes et détails fins\n'
+                            '• Mode 100% déterministe (< 1 sec) : Le prompt textuel et le réglage de steps sont inopérants et masqués par conception car aucune diffusion neuronale n\'est sollicitée.',
                             style: TextStyle(fontSize: 12, height: 1.4),
                           ),
                         ],
