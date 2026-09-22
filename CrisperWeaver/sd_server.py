@@ -1385,47 +1385,61 @@ def process_strict_face_swap(
             pts_a_norm = cv2.transform(pts_a.reshape(-1, 1, 2), M_sim).reshape(-1, 2)
             warped_norm = cv2.warpAffine(a_bgr, M_sim, (wb, hb), flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REFLECT)
 
-            # 5. Délimitation anatomique du masque facial R10 (Périmètre ordonné 36 repères)
+            # 5. Délimitation anatomique du masque facial R10-V (Périmètre ordonné 36 repères)
             # Élimine la convex hull ballon qui débordait sur les oreilles, cheveux et arrière-plans.
             FACE_OVAL_ORDER = [
                 10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 
                 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109
             ]
-            brow_indices_b = [70, 63, 105, 66, 107, 55, 65, 52, 53, 46, 336, 296, 334, 293, 300, 276, 283, 282, 295, 285]
 
             # Masque anatomique de la cible B
             poly_b = pts_b[FACE_OVAL_ORDER].astype(np.int32)
             mask_b = np.zeros((hb, wb), dtype=np.uint8)
             cv2.fillPoly(mask_b, [poly_b], 255)
 
-            # Masque anatomique de la source A dans l'espace normalisé de B
-            poly_a = pts_a_norm[FACE_OVAL_ORDER].astype(np.int32)
-            mask_a = np.zeros((hb, wb), dtype=np.uint8)
-            cv2.fillPoly(mask_a, [poly_a], 255)
+            # Domaine réel valide de l'image source A projetée dans le canevas de B
+            # Garantit qu'aucun artefact de BORDER_REFLECT n'est échantillonné si A est un crop serré
+            corners_a = np.array([[0, 0], [wa, 0], [wa, ha], [0, ha]], dtype=np.float32)
+            corners_a_in_b = cv2.transform(corners_a.reshape(-1, 1, 2), M_sim).reshape(-1, 2)
+            mask_valid_a = np.zeros((hb, wb), dtype=np.uint8)
+            cv2.fillPoly(mask_valid_a, [corners_a_in_b.astype(np.int32)], 255)
+            mask_valid_a = cv2.erode(mask_valid_a, cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7)), iterations=1)
 
-            # Intersection stricte : garantit 0 débordement sur les oreilles de B et 0 inclusion du fond/vêtements de A
-            mask_inter = cv2.bitwise_and(mask_b, mask_a)
+            # Intersection anatomique de B avec le domaine valide de A (invariance aux crops)
+            mask_comb = cv2.bitwise_and(mask_b, mask_valid_a)
 
             # Érosion douce pour garantir un raccord 100% intra-cutané
             erode_k = 5 if swap_scope == "face_only" else 7
-            mask_target = cv2.erode(mask_inter, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erode_k, erode_k)), iterations=1)
+            mask_target = cv2.erode(mask_comb, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erode_k, erode_k)), iterations=1)
 
-            # 6. Élimination préventive des sourcils fantômes de B par inpainting intra-cutané local
-            brow_hull_b = cv2.convexHull(pts_b[brow_indices_b].astype(np.int32))
+            # 6. Élimination préventive des sourcils fantômes de B par inpainting intra-cutané localisé
+            # R10-V : Séparation stricte des coques gauche et droite (aucun pont inter-sourcils bavant sur les tempes)
+            # Et restriction absolue de l'inpainting à l'intérieur de mask_target (zéro triangle gris sur la tempe)
+            left_brow_indices = [70, 63, 105, 66, 107, 55, 65, 52, 53, 46]
+            right_brow_indices = [336, 296, 334, 293, 300, 276, 283, 282, 295, 285]
             brow_mask_b = np.zeros((hb, wb), dtype=np.uint8)
-            cv2.fillConvexPoly(brow_mask_b, brow_hull_b, 255)
-            brow_mask_b = cv2.dilate(brow_mask_b, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)), iterations=1)
-            b_clean = cv2.inpaint(b_bgr, brow_mask_b, 5, cv2.INPAINT_TELEA)
+            hull_left = cv2.convexHull(pts_b[left_brow_indices].astype(np.int32))
+            hull_right = cv2.convexHull(pts_b[right_brow_indices].astype(np.int32))
+            cv2.fillConvexPoly(brow_mask_b, hull_left, 255)
+            cv2.fillConvexPoly(brow_mask_b, hull_right, 255)
+            brow_mask_b = cv2.dilate(brow_mask_b, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1)
+            
+            # Restriction stricte à l'intérieur de mask_target, avec marge par rapport à la bordure
+            inner_target = cv2.erode(mask_target, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1)
+            brow_mask_b = cv2.bitwise_and(brow_mask_b, inner_target)
+            b_clean = cv2.inpaint(b_bgr, brow_mask_b, 5, cv2.INPAINT_TELEA) if np.any(brow_mask_b) else b_bgr.copy()
 
-            # 7. Harmonisation colorimétrique globale en espace CIE-LAB
-            b_pix = b_bgr[mask_target > 0]
-            a_pix = warped_norm[mask_target > 0]
-            if len(b_pix) < 50 or len(a_pix) < 50:
-                b_pix = b_bgr.reshape(-1, 3)
-                a_pix = warped_norm.reshape(-1, 3)
+            # 7. Harmonisation colorimétrique globale en espace CIE-LAB (avec exclusion des contrastes lunettes/poils)
+            gray_b = cv2.cvtColor(b_bgr, cv2.COLOR_BGR2GRAY)
+            gray_w = cv2.cvtColor(warped_norm, cv2.COLOR_BGR2GRAY)
+            skin_sel_b = (gray_b >= 65) & (gray_b <= 245) & (mask_target > 0)
+            skin_sel_a = (gray_w >= 65) & (gray_w <= 245) & (mask_target > 0)
+            if np.count_nonzero(skin_sel_b) < 100 or np.count_nonzero(skin_sel_a) < 100:
+                skin_sel_b = mask_target > 0
+                skin_sel_a = mask_target > 0
 
-            b_lab = cv2.cvtColor(b_pix.reshape(1, -1, 3), cv2.COLOR_BGR2LAB).reshape(-1, 3).astype(float)
-            a_lab = cv2.cvtColor(a_pix.reshape(1, -1, 3), cv2.COLOR_BGR2LAB).reshape(-1, 3).astype(float)
+            b_lab = cv2.cvtColor(b_bgr[skin_sel_b].reshape(1, -1, 3), cv2.COLOR_BGR2LAB).reshape(-1, 3).astype(float)
+            a_lab = cv2.cvtColor(warped_norm[skin_sel_a].reshape(1, -1, 3), cv2.COLOR_BGR2LAB).reshape(-1, 3).astype(float)
 
             mu_b, std_b = np.mean(b_lab, axis=0), np.std(b_lab, axis=0)
             mu_a, std_a = np.mean(a_lab, axis=0), np.std(a_lab, axis=0)
@@ -1450,23 +1464,26 @@ def process_strict_face_swap(
                 alpha_3d = np.stack([alpha_soft] * 3, axis=-1)
                 composite_bgr = (harm_a_bgr * alpha_3d + b_clean * (1.0 - alpha_3d)).astype(np.uint8)
 
-            # 9. Préservation nette des montures de lunettes et accessoires sombres haute fréquence
-            gray_harm = cv2.cvtColor(harm_a_bgr, cv2.COLOR_BGR2GRAY)
-            eye_region_pts = pts_a_norm[[33, 130, 246, 161, 160, 159, 158, 157, 173, 133, 155, 154, 153, 145, 144, 163, 7, 
-                                         362, 398, 384, 385, 386, 387, 388, 466, 263, 249, 390, 373, 374, 380, 381, 382]]
-            eye_zone = np.zeros((hb, wb), dtype=np.uint8)
-            cv2.fillConvexPoly(eye_zone, cv2.convexHull(eye_region_pts.astype(np.int32)), 255)
-            eye_zone = cv2.dilate(eye_zone, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25)), iterations=1)
+            # 9. Préservation continue des lunettes (montures, pont nasal et branches complètes vers les oreilles)
+            left_eye_temple_pts = pts_a_norm[[33, 130, 246, 161, 160, 159, 158, 157, 173, 133, 155, 154, 153, 145, 144, 163, 7, 234, 127, 162, 21]]
+            right_eye_temple_pts = pts_a_norm[[362, 398, 384, 385, 386, 387, 388, 466, 263, 249, 390, 373, 374, 380, 381, 382, 454, 356, 389, 251]]
+            bridge_pts = pts_a_norm[[168, 6, 197, 195, 5, 4, 1]]
 
-            frame_mask = (gray_harm < 85) & (eye_zone > 0) & (mask_target > 0)
-            if np.any(frame_mask):
-                frame_weight = cv2.GaussianBlur(frame_mask.astype(float), (5, 5), 0)
+            glasses_zone = np.zeros((hb, wb), dtype=np.uint8)
+            cv2.fillConvexPoly(glasses_zone, cv2.convexHull(left_eye_temple_pts.astype(np.int32)), 255)
+            cv2.fillConvexPoly(glasses_zone, cv2.convexHull(right_eye_temple_pts.astype(np.int32)), 255)
+            cv2.fillConvexPoly(glasses_zone, cv2.convexHull(bridge_pts.astype(np.int32)), 255)
+            glasses_zone = cv2.dilate(glasses_zone, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)), iterations=1)
+
+            frame_mask_w = (gray_w < 95) & (glasses_zone > 0)
+            if np.any(frame_mask_w):
+                frame_weight = cv2.GaussianBlur(frame_mask_w.astype(float), (3, 3), 0)
                 for c in range(3):
                     composite_bgr[:, :, c] = (composite_bgr[:, :, c] * (1.0 - frame_weight) + harm_a_bgr[:, :, c] * frame_weight).astype(np.uint8)
 
-            # Garantie absolue : aucun pixel modifié hors de la zone faciale / sourcils
-            face_combined_zone = cv2.bitwise_or(mask_inter, brow_mask_b)
-            composite_bgr[face_combined_zone == 0] = b_bgr[face_combined_zone == 0]
+            # Garantie absolue : aucun pixel modifié hors du visage et des lunettes
+            allowed_zone = cv2.bitwise_or(mask_target, (frame_mask_w.astype(np.uint8) * 255))
+            composite_bgr[allowed_zone == 0] = b_bgr[allowed_zone == 0]
             composite_rgb = cv2.cvtColor(composite_bgr, cv2.COLOR_BGR2RGB)
             final_img = Image.fromarray(composite_rgb)
 
