@@ -83,7 +83,7 @@ void main() {
     });
 
     test('A.2: Candidate directory contains all 19 image models bit-for-bit', () {
-      final candidateDir = Directory(r'C:\Jarvisol_Test\Jarvisol_V1_EXT03_Candidate');
+      final candidateDir = Directory(r'D:\Antigravity\AgentFolder\Jarvisol_V1_EXT03_Candidate');
       expect(candidateDir.existsSync(), isTrue);
 
       final csvFile = File('data/config/canonical_production_image_assets.csv');

@@ -6,10 +6,10 @@ import 'package:jarvisol/services/voice_pack_inspector.dart';
 import 'package:jarvisol/services/imported_voice_service.dart';
 
 void main() {
-  const candidateDir = r'C:\Jarvisol_Test\Jarvisol_V1_EXT03_Candidate';
-  const dllPath = r'C:\Jarvisol_Test\Jarvisol_V1_EXT03_Candidate\crispasr.dll';
-  const sampleWav = r'C:\Jarvisol_Test\VoiceBake\fixtures\test_sample.wav';
-  const multiGguf = r'C:\Jarvisol_Test\VoiceBake\fixtures\multispeaker_qwen3_alice_bob.gguf';
+  const candidateDir = r'D:\Antigravity\AgentFolder\Jarvisol_V1_EXT03_Candidate';
+  const dllPath = r'D:\Antigravity\AgentFolder\Jarvisol_V1_EXT03_Candidate\crispasr.dll';
+  const sampleWav = r'D:\Antigravity\AgentFolder\VoiceBake\fixtures\test_sample.wav';
+  const multiGguf = r'D:\Antigravity\AgentFolder\VoiceBake\fixtures\multispeaker_qwen3_alice_bob.gguf';
 
   group('Phase E-R3 End-to-End Live TTS Routing & Synthesis', () {
     test('E-R3-01 to E-R3-06: Chatterbox Baked Voice Pack import, routing, and real synthesis', () {

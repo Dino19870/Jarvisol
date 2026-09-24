@@ -8,7 +8,7 @@ void main() {
 
   final badPackPath = r"C:\Users\lansa\.gemini\antigravity\brain\31f213dd-5da9-404a-adeb-04503ae36594\scratch\er9_fixtures\controlled_bad_double_paste.gguf";
   final cleanPackPath = r"C:\Users\lansa\.gemini\antigravity\brain\31f213dd-5da9-404a-adeb-04503ae36594\scratch\er8_fixtures\B_normale.gguf";
-  final chatterboxPath = r"C:\Jarvisol_Test\VoiceBake\output\C2_Chatterbox_Test.gguf";
+  final chatterboxPath = r"D:\Antigravity\AgentFolder\VoiceBake\output\C2_Chatterbox_Test.gguf";
 
   group('Oracle Explicite : Import pack Qwen3 suspect', () {
     test('1. VoicePackInspector détecte la répétition massive sur bad pack Qwen3', () {

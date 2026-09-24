@@ -18,8 +18,8 @@ import 'package:jarvisol/engines/transcription_engine.dart';
 import 'package:jarvisol/services/transcription_worker_pool.dart';
 
 void main() {
-  final baseModelFile = File(r'C:\Jarvisol_Test\Jarvisol_V1_POST_GEL_Final_v2\data\models\whisper_cpp\ggml-base.bin');
-  final whisperDllFile = File(r'C:\Jarvisol_Test\Jarvisol_V1_POST_GEL_Final_v2\whisper.dll');
+  final baseModelFile = File(r'D:\Antigravity\AgentFolder\Jarvisol_V1_POST_GEL_Final_v2\data\models\whisper_cpp\ggml-base.bin');
+  final whisperDllFile = File(r'D:\Antigravity\AgentFolder\Jarvisol_V1_POST_GEL_Final_v2\whisper.dll');
   final shortWav = File('test/jfk-2s.wav');
   final longWav = File('test/jfk.wav');
 

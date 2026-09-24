@@ -16,7 +16,7 @@ void main() {
 
   setUpAll(() async {
     await BakedCatalogLoader.load();
-    const dllPath = r'C:\Jarvisol_Test\Jarvisol_V1_POST_GEL_Final_v2\whisper.dll';
+    const dllPath = r'D:\Antigravity\AgentFolder\Jarvisol_V1_POST_GEL_Final_v2\whisper.dll';
     if (File(dllPath).existsSync()) {
       try {
         DynamicLibrary.open(dllPath);
@@ -236,7 +236,7 @@ void main() {
     });
 
     group('D. Live Native End-to-End Synthesis', () {
-      const modelsDir = r'C:\Jarvisol_Test\Jarvisol_V1_POST_GEL_Final_v2\data\models\whisper_cpp';
+      const modelsDir = r'D:\Antigravity\AgentFolder\Jarvisol_V1_POST_GEL_Final_v2\data\models\whisper_cpp';
 
       test('LIVE-01: VibeVoice Realtime 0.5B + Emma voicepack generates audio', () async {
         final modelPath = '$modelsDir\\vibevoice-realtime-0.5b-q4_k.gguf';

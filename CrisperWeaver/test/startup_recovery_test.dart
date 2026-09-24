@@ -40,7 +40,7 @@ void main() {
     }
 
     test('LITE-001: preferences.json utilisateur candidat reste strictement immuable', () {
-      final candidateFile = File('C:/Jarvisol/Jarvisol_V1_EXT03_Candidate/data/preferences.json');
+      final candidateFile = File('D:/Antigravity/AgentFolder/Jarvisol_V1_EXT03_Candidate/data/preferences.json');
       expect(candidateFile.existsSync(), isTrue, reason: 'Candidate preferences.json must exist');
       
       const expectedSha = '83F0198CC5E56F4BC96A6B5F6A65170B1283D332E4D668C0E4A5ED90D66D564D';
@@ -50,9 +50,9 @@ void main() {
     });
 
     test('LITE-002R: diff JSON(current, lite) = uniquement liste blanche de cles startup justifiees', () {
-      final candidateFile = File('C:/Jarvisol/Jarvisol_V1_EXT03_Candidate/data/preferences.json');
-      final liteFile = File('C:/Jarvisol/CrisperWeaver/data/preferences.lite.json');
-      final recoveryFile = File('C:/Jarvisol/CrisperWeaver/data/preferences.lite.recovery.json');
+      final candidateFile = File('D:/Antigravity/AgentFolder/Jarvisol_V1_EXT03_Candidate/data/preferences.json');
+      final liteFile = File('D:/Antigravity/AgentFolder/CrisperWeaver/data/preferences.lite.json');
+      final recoveryFile = File('D:/Antigravity/AgentFolder/CrisperWeaver/data/preferences.lite.recovery.json');
 
       expect(liteFile.existsSync(), isTrue);
       expect(recoveryFile.existsSync(), isTrue);
@@ -93,7 +93,7 @@ void main() {
     });
 
     test('LITE-003: validation de l\'autoload map et identification du goulot memoire', () {
-      final mapFile = File('C:/Jarvisol/CrisperWeaver/REQ_POST_002_STARTUP_AUTOLOAD_MAP.csv');
+      final mapFile = File('D:/Antigravity/AgentFolder/CrisperWeaver/REQ_POST_002_STARTUP_AUTOLOAD_MAP.csv');
       expect(mapFile.existsSync(), isTrue);
 
       final lines = mapFile.readAsLinesSync();
@@ -305,7 +305,7 @@ void main() {
     });
 
     test('LITE-013: qualification honnete de la cause memoire (distinction mecanisme vs OOM reel)', () {
-      final mapFile = File('C:/Jarvisol/CrisperWeaver/REQ_POST_002_STARTUP_AUTOLOAD_MAP.csv');
+      final mapFile = File('D:/Antigravity/AgentFolder/CrisperWeaver/REQ_POST_002_STARTUP_AUTOLOAD_MAP.csv');
       final content = mapFile.readAsStringSync();
       
       // Verification honnete : Whisper large-v3-turbo constitue un facteur de risque memoire plausible.
@@ -320,7 +320,7 @@ void main() {
       expect(modelDef.fileName, equals('ggml-base.bin'));
 
       // 2. Verifier presence physique reelle du binaire dans la distribution Candidate
-      final candidateModel = File('C:/Jarvisol/Jarvisol_V1_EXT03_Candidate/data/models/whisper_cpp/ggml-base.bin');
+      final candidateModel = File('D:/Antigravity/AgentFolder/Jarvisol_V1_EXT03_Candidate/data/models/whisper_cpp/ggml-base.bin');
       expect(candidateModel.existsSync(), isTrue, reason: 'ggml-base.bin must exist in candidate models');
       expect(candidateModel.lengthSync(), equals(147951465));
 
@@ -336,7 +336,7 @@ void main() {
       expect(resolvedDef!.fileName, equals('ggml-base.bin'));
 
       // 4. Verification de chemin sans PATH externe (relatif a data/models/whisper_cpp)
-      final localPath = p.join('C:/Jarvisol/Jarvisol_V1_EXT03_Candidate/data/models/whisper_cpp', resolvedDef.fileName);
+      final localPath = p.join('D:/Antigravity/AgentFolder/Jarvisol_V1_EXT03_Candidate/data/models/whisper_cpp', resolvedDef.fileName);
       expect(File(localPath).existsSync(), isTrue);
 
       // 5. Chargement effectif du modele par le moteur atteignant l'etat ready
@@ -348,10 +348,10 @@ void main() {
     });
 
     test('LITE-015: CANDIDATE_LITE_FILES_PRESENT - templates Lite presents a cote de preferences.json Candidate', () {
-      final candLite = File('C:/Jarvisol/Jarvisol_V1_EXT03_Candidate/data/preferences.lite.json');
-      final candRecovery = File('C:/Jarvisol/Jarvisol_V1_EXT03_Candidate/data/preferences.lite.recovery.json');
-      final srcLite = File('C:/Jarvisol/CrisperWeaver/data/preferences.lite.json');
-      final srcRecovery = File('C:/Jarvisol/CrisperWeaver/data/preferences.lite.recovery.json');
+      final candLite = File('D:/Antigravity/AgentFolder/Jarvisol_V1_EXT03_Candidate/data/preferences.lite.json');
+      final candRecovery = File('D:/Antigravity/AgentFolder/Jarvisol_V1_EXT03_Candidate/data/preferences.lite.recovery.json');
+      final srcLite = File('D:/Antigravity/AgentFolder/CrisperWeaver/data/preferences.lite.json');
+      final srcRecovery = File('D:/Antigravity/AgentFolder/CrisperWeaver/data/preferences.lite.recovery.json');
 
       expect(candLite.existsSync(), isTrue, reason: 'preferences.lite.json must be present in Candidate data/');
       expect(candRecovery.existsSync(), isTrue, reason: 'preferences.lite.recovery.json must be present in Candidate data/');
@@ -366,7 +366,7 @@ void main() {
       expect(shaCandLite, equals(shaCandRecovery), reason: 'Lite and Recovery must be identical');
 
       // preferences.json in candidate must not have been modified
-      final candPrefs = File('C:/Jarvisol/Jarvisol_V1_EXT03_Candidate/data/preferences.json');
+      final candPrefs = File('D:/Antigravity/AgentFolder/Jarvisol_V1_EXT03_Candidate/data/preferences.json');
       expect(sha256Of(candPrefs), equals('83F0198CC5E56F4BC96A6B5F6A65170B1283D332E4D668C0E4A5ED90D66D564D'));
     });
   });

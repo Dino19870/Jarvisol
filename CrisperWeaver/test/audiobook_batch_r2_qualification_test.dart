@@ -9,13 +9,13 @@ import 'package:jarvisol/utils/app_paths.dart';
 import 'package:crispasr/crispasr.dart' as crispasr;
 
 // Real Live Candidate Paths
-const candidateDir = 'C:/Jarvisol/Jarvisol_V1_EXT03_Candidate';
+const candidateDir = 'D:/Antigravity/AgentFolder/Jarvisol_V1_EXT03_Candidate';
 const dllPath = '$candidateDir/crispasr.dll';
 const kokoroModel = '$candidateDir/data/models/whisper_cpp/kokoro-82m-q8_0.gguf';
 const kokoroVoice = '$candidateDir/data/models/whisper_cpp/kokoro-voice-ff_siwis.gguf';
 const qwen3Base = '$candidateDir/data/models/whisper_cpp/qwen3-tts-12hz-0.6b-base.gguf';
 const qwen3Codec = '$candidateDir/data/models/whisper_cpp/qwen3-tts-tokenizer-12hz.gguf';
-const qwen3MultiPack = 'C:/Jarvisol/VoiceBake/fixtures/multispeaker_qwen3_alice_bob.gguf';
+const qwen3MultiPack = 'D:/Antigravity/AgentFolder/VoiceBake/fixtures/multispeaker_qwen3_alice_bob.gguf';
 const chatterboxT3 = '$candidateDir/data/models/whisper_cpp/chatterbox-t3-q8_0.gguf';
 const chatterboxS3 = '$candidateDir/data/models/whisper_cpp/chatterbox-s3gen-q4_k.gguf';
 

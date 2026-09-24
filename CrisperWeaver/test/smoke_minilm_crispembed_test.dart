@@ -29,10 +29,10 @@ void main() {
   // Chemin absolu du GGUF — flutter test s'exécute depuis la racine du projet
   // Platform.script est incorrect dans le contexte flutter test Windows
   const modelPath =
-      r'C:\Jarvisol_Test\CrisperWeaver\build\windows\x64\runner\Release\data\models\whisper_cpp\all-MiniLM-L6-v2-iq4_xs.gguf';
+      r'D:\Antigravity\AgentFolder\CrisperWeaver\build\windows\x64\runner\Release\data\models\whisper_cpp\all-MiniLM-L6-v2-iq4_xs.gguf';
 
   const dllPath =
-      r'C:\Jarvisol_Test\CrisperWeaver\crispembed.dll';
+      r'D:\Antigravity\AgentFolder\CrisperWeaver\crispembed.dll';
 
   group('Smoke test — CrispEmbed + MiniLM IQ4_XS', () {
     late CrispEmbed model;

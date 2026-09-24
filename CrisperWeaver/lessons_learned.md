@@ -21,7 +21,7 @@ Avant tout travail sur `document_chat_widget.dart`, l'agent DOIT :
 4. **Réappliquer** les éventuelles modifications manquantes, en les backupant correctement
 
 ### Fichier concerné
-`C:\Jarvisol\CrisperWeaver\lib\widgets\document_chat_widget.dart`
+`D:\Antigravity\AgentFolder\CrisperWeaver\lib\widgets\document_chat_widget.dart`
 
 ### Backups disponibles pour comparaison
 - `document_chat_widget.dart.bak_20260826_0746` — version du matin du 26 août (celle restaurée)
@@ -283,8 +283,8 @@ pyinstaller --onefile --name sd_server --hidden-import PIL ... --distpath Releas
 ### Règle obligatoire avant tout `flutter clean`
 ```powershell
 # TOUJOURS sauvegarder avant flutter clean !
-$src = "C:\Jarvisol\CrisperWeaver\build\windows\x64\runner\Release"
-$bak = "C:\Jarvisol\_release_backup_$(Get-Date -f yyyyMMdd_HHmm)"
+$src = "D:\Antigravity\AgentFolder\CrisperWeaver\build\windows\x64\runner\Release"
+$bak = "D:\Antigravity\AgentFolder\_release_backup_$(Get-Date -f yyyyMMdd_HHmm)"
 Copy-Item $src $bak -Recurse
 Write-Host "Backup : $bak"
 ```
@@ -386,7 +386,7 @@ $src = "C:\Users\lansa\Downloads\AUTOPSYE\CAS 2\Export\CrisperWeaver\build\windo
 # Restaurer dans les 3 emplacements :
 Copy-Item $src "$rel\mcp_servers\gmail\credentials.json" -Force
 Copy-Item $src "$rel\data\mcp_servers\gmail\credentials.json" -Force
-Copy-Item $src "C:\Jarvisol\CrisperWeaver\mcp_servers\gmail\credentials.json" -Force
+Copy-Item $src "D:\Antigravity\AgentFolder\CrisperWeaver\mcp_servers\gmail\credentials.json" -Force
 ```
 
 **Structure correcte credentials.json** : doit contenir `access_token`, `refresh_token`, `scope`, `token_type`, `expiry_date`.

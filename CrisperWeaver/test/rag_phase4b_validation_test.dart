@@ -17,8 +17,8 @@ import 'package:http/http.dart' as http;
 import 'package:crispembed/crispembed.dart';
 
 // ─── Chemins ────────────────────────────────────────────────────────────────
-const _gguf = r'C:\Jarvisol_Test\CrisperWeaver\build\windows\x64\runner\Release\data\models\whisper_cpp\all-MiniLM-L6-v2-iq4_xs.gguf';
-const _dll  = r'C:\Jarvisol_Test\CrisperWeaver\crispembed.dll';
+const _gguf = r'D:\Antigravity\AgentFolder\CrisperWeaver\build\windows\x64\runner\Release\data\models\whisper_cpp\all-MiniLM-L6-v2-iq4_xs.gguf';
+const _dll  = r'D:\Antigravity\AgentFolder\CrisperWeaver\crispembed.dll';
 const _lmUrl   = 'http://127.0.0.1:1234/v1/embeddings';
 const _lmModel = 'text-embedding-qwen3-embedding-4b';
 

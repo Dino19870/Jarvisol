@@ -9,10 +9,10 @@ import 'package:jarvisol/utils/app_paths.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  final chatterboxSample = r'C:\Jarvisol_Test\VoiceBake\output\C2_Chatterbox_Test.gguf';
-  final qwen3Sample = r'C:\Jarvisol_Test\VoiceBake\output\C2_Qwen3_Test.gguf';
-  final qwen3MultiSample = r'C:\Jarvisol_Test\VoiceBake\output\test_multispeaker_qwen3.gguf';
-  final nonVoicepackModel = r'C:\Jarvisol_Test\candidate_release_c85_ext02_p4_nomodels\data\models\whisper_cpp\chatterbox-t3-q8_0.gguf';
+  final chatterboxSample = r'D:\Antigravity\AgentFolder\VoiceBake\output\C2_Chatterbox_Test.gguf';
+  final qwen3Sample = r'D:\Antigravity\AgentFolder\VoiceBake\output\C2_Qwen3_Test.gguf';
+  final qwen3MultiSample = r'D:\Antigravity\AgentFolder\VoiceBake\output\test_multispeaker_qwen3.gguf';
+  final nonVoicepackModel = r'D:\Antigravity\AgentFolder\candidate_release_c85_ext02_p4_nomodels\data\models\whisper_cpp\chatterbox-t3-q8_0.gguf';
 
   group('Phase D — Tests d''intégration Voice Packs GGUF', () {
     late Directory tempTestDir;

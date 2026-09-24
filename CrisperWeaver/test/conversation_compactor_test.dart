@@ -106,7 +106,7 @@ void main() {
   "constraints": ["Zéro régression", "Code source sauvegardé avant modification"],
   "decisions": ["Utiliser 12 rubriques sémantiques", "Capsule injectée dans le system prompt"],
   "keyFacts": ["Base de code Flutter/Dart", "Présence de LM Studio et LiteRT"],
-  "identifiersAndPaths": ["C:/Jarvisol/CrisperWeaver", "SHA256: 4809074122CD9BD77CB7CC", "8192 tokens"],
+  "identifiersAndPaths": ["D:/Antigravity/AgentFolder/CrisperWeaver", "SHA256: 4809074122CD9BD77CB7CC", "8192 tokens"],
   "workDone": ["Création du modèle conversation_capsule.dart", "Création du service conversation_compactor_service.dart"],
   "results": ["Réduction de 70% des tokens de l'historique compacté"],
   "incidents": ["Éviter ProcessStartMode.detachedWithStdio"],
@@ -134,7 +134,7 @@ void main() {
       expect(capsule.constraints.length, equals(2));
       expect(capsule.decisions.length, equals(2));
       expect(capsule.keyFacts.length, equals(2));
-      expect(capsule.identifiersAndPaths, contains('C:/Jarvisol/CrisperWeaver'));
+      expect(capsule.identifiersAndPaths, contains('D:/Antigravity/AgentFolder/CrisperWeaver'));
       expect(capsule.identifiersAndPaths, contains('SHA256: 4809074122CD9BD77CB7CC'));
       expect(capsule.workDone.length, equals(2));
       expect(capsule.results.first, contains('Réduction de 70%'));
@@ -203,7 +203,7 @@ void main() {
         tokensAfter: 600,
         inputHash: 'hash_v2',
         identifiersAndPaths: const [
-          'C:\\Jarvisol_Test\\CrisperWeaver\\build\\app.so',
+          'D:\\Antigravity\\AgentFolder\\CrisperWeaver\\build\\app.so',
           '0x0000000000007dcd',
           'SHA256: 4809074122CD9BD77CB7CC9974AB1F5435DC390009C079E4DFB962FE5235E22D',
           '3.4 GiB',

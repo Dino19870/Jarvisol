@@ -5,7 +5,7 @@ import 'package:jarvisol/services/voice_pack_inspector.dart';
 void main() {
   group('VoicePackInspector', () {
     test('D-01 / D-05: Inspect Chatterbox Voice Pack', () {
-      final path = r'C:\Jarvisol_Test\VoiceBake\output\C2_Chatterbox_Test.gguf';
+      final path = r'D:\Antigravity\AgentFolder\VoiceBake\output\C2_Chatterbox_Test.gguf';
       if (!File(path).existsSync()) return;
       final res = VoicePackInspector.inspect(path);
       print('ERR: ' + (res.errorMessage ?? '')); expect(res.isValid, isTrue);
@@ -16,7 +16,7 @@ void main() {
     });
 
     test('D-02 / D-06: Inspect Qwen3 Voice Pack', () {
-      final path = r'C:\Jarvisol_Test\VoiceBake\output\C2_Qwen3_Test.gguf';
+      final path = r'D:\Antigravity\AgentFolder\VoiceBake\output\C2_Qwen3_Test.gguf';
       if (!File(path).existsSync()) return;
       final res = VoicePackInspector.inspect(path);
       print('ERR: ' + (res.errorMessage ?? '')); expect(res.isValid, isTrue);
@@ -27,7 +27,7 @@ void main() {
     });
 
     test('D-03: Reject main model GGUF (non-voicepack)', () {
-      final path = r'C:\Jarvisol_Test\candidate_release_c85_ext02_p4_nomodels\data\models\whisper_cpp\chatterbox-t3-q8_0.gguf';
+      final path = r'D:\Antigravity\AgentFolder\candidate_release_c85_ext02_p4_nomodels\data\models\whisper_cpp\chatterbox-t3-q8_0.gguf';
       if (!File(path).existsSync()) return;
       final res = VoicePackInspector.inspect(path);
       expect(res.isValid, isFalse);

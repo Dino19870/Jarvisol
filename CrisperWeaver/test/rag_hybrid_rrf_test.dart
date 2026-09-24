@@ -25,9 +25,9 @@ import 'package:crispembed/crispembed.dart';
 // Chemins
 // ─────────────────────────────────────────────────────────────────────────────
 const _ggufPath =
-    r'C:\Jarvisol_Test\CrisperWeaver\build\windows\x64\runner\Release\data\models\whisper_cpp\all-MiniLM-L6-v2-iq4_xs.gguf';
+    r'D:\Antigravity\AgentFolder\CrisperWeaver\build\windows\x64\runner\Release\data\models\whisper_cpp\all-MiniLM-L6-v2-iq4_xs.gguf';
 const _dllPath =
-    r'C:\Jarvisol_Test\CrisperWeaver\crispembed.dll';
+    r'D:\Antigravity\AgentFolder\CrisperWeaver\crispembed.dll';
 const _lmStudioUrl = 'http://127.0.0.1:1234/v1/embeddings';
 const _lmStudioModel = 'text-embedding-qwen3-embedding-4b';
 

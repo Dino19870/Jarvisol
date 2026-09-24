@@ -203,7 +203,7 @@ void main() {
 
     test('T8: Non-regression — Single chapter generation still produces expected chapter state', () {
       final chap = sampleProject.chapters[0];
-      const simulatedWavPath = 'C:/Jarvisol/data/Audiobooks/Test/Audiobook_Chap_01.wav';
+      const simulatedWavPath = 'D:/Antigravity/AgentFolder/data/Audiobooks/Test/Audiobook_Chap_01.wav';
 
       final updatedChapter = chap.copyWith(
         status: AudiobookRenderStatus.ready,
