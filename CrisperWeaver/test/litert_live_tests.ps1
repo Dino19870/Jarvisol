@@ -1,12 +1,12 @@
 # test/litert_live_tests.ps1
 # Live integration tests for LiteRT-LM server lifecycle (T7-T12)
-# Requires: LiteRT-LM Release at C:\Jarvisol_Test\CrisperWeaver\build\windows\x64\runner\Release
+# Requires: LiteRT-LM Release at D:\Antigravity\AgentFolder\CrisperWeaver\build\windows\x64\runner\Release
 # Run: pwsh -File test\litert_live_tests.ps1
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Continue'
 
-$RELEASE = "C:\Jarvisol_Test\CrisperWeaver\build\windows\x64\runner\Release"
+$RELEASE = "D:\Antigravity\AgentFolder\CrisperWeaver\build\windows\x64\runner\Release"
 $JARVISOL = "$RELEASE\jarvisol.exe"
 $LITERT_EXE = "C:\Users\lansa\AppData\Local\hermes\hermes-agent\venv\Scripts\litert-lm.exe"
 $PORT = 9379

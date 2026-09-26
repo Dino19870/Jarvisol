@@ -1483,6 +1483,51 @@ class SettingsService {
 
   String get webMediaBrowserForCookies => _prefs.getString('web_media_browser_for_cookies') ?? 'chrome';
   set webMediaBrowserForCookies(String val) => _prefs.setString('web_media_browser_for_cookies', val);
+
+  // --- Voice I/O Auto-TTS Response (AUA-004 / DOC-VOICE-R1B) ---
+  bool get autoTtsResponseEnabled =>
+      _prefs.getBool('auto_tts_response_enabled') ?? false;
+  set autoTtsResponseEnabled(bool val) {
+    Log.instance.d('settings', 'Saving autoTtsResponseEnabled: $val');
+    _prefs.setBool('auto_tts_response_enabled', val);
+  }
+  Future<void> setAutoTtsResponseEnabled(bool val) async {
+    Log.instance.d('settings', 'Saving autoTtsResponseEnabled: $val');
+    await _prefs.setBool('auto_tts_response_enabled', val);
+  }
+
+  // --- Voice I/O R1e : Microsoft TTS & Assistants Voice Settings ---
+  String get voiceIoMode => _prefs.getString('voice_io_mode') ?? 'auto';
+  set voiceIoMode(String val) => _prefs.setString('voice_io_mode', val);
+  Future<void> setVoiceIoMode(String val) async => await _prefs.setString('voice_io_mode', val);
+
+  String get voiceIoOnlineVoice => _prefs.getString('voice_io_online_voice') ?? 'fr-FR-HenriNeural';
+  set voiceIoOnlineVoice(String val) => _prefs.setString('voice_io_online_voice', val);
+  Future<void> setVoiceIoOnlineVoice(String val) async => await _prefs.setString('voice_io_online_voice', val);
+
+  String get voiceIoOfflineVoice => _prefs.getString('voice_io_offline_voice') ?? 'Microsoft Paul';
+  set voiceIoOfflineVoice(String val) => _prefs.setString('voice_io_offline_voice', val);
+  Future<void> setVoiceIoOfflineVoice(String val) async => await _prefs.setString('voice_io_offline_voice', val);
+
+  bool? get voiceIoOnlineConsent => _prefs.getBool('voice_io_online_consent');
+  set voiceIoOnlineConsent(bool? val) {
+    if (val == null) {
+      _prefs.remove('voice_io_online_consent');
+    } else {
+      _prefs.setBool('voice_io_online_consent', val);
+    }
+  }
+  Future<void> setVoiceIoOnlineConsent(bool? val) async {
+    if (val == null) {
+      await _prefs.remove('voice_io_online_consent');
+    } else {
+      await _prefs.setBool('voice_io_online_consent', val);
+    }
+  }
+
+  String get voiceIoEngine => _prefs.getString('voice_io_engine') ?? 'microsoft';
+  set voiceIoEngine(String val) => _prefs.setString('voice_io_engine', val);
+  Future<void> setVoiceIoEngine(String val) async => await _prefs.setString('voice_io_engine', val);
 }
 
 class SystemPromptPreset {
@@ -1619,6 +1664,29 @@ int getRecommendedModelCapacity(String modelName, LlmProvider provider) {
 final settingsServiceProvider = Provider<SettingsService>((ref) {
   throw UnimplementedError('SettingsService not initialized');
 });
+
+/// Provider d'état réactif pour la commande de réponse vocale auto (OFF par défaut).
+/// Synchronisé bidirectionnellement avec SettingsService.
+final autoTtsResponseEnabledProvider =
+    NotifierProvider<AutoTtsResponseNotifier, bool>(AutoTtsResponseNotifier.new);
+
+class AutoTtsResponseNotifier extends Notifier<bool> {
+  @override
+  bool build() {
+    final settings = ref.watch(settingsServiceProvider);
+    return settings.autoTtsResponseEnabled;
+  }
+
+  void setEnabled(bool value) {
+    state = value;
+    ref.read(settingsServiceProvider).autoTtsResponseEnabled = value;
+  }
+
+  void toggle() {
+    setEnabled(!state);
+  }
+}
+
 
 /// §5.1.6 v3 — which LLM cleanup path Tidy / Summarize uses.
 /// Single source of truth, persisted to prefs, read by both the

@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['memory_server.py'],
+    ['D:/Antigravity/AgentFolder/CrisperWeaver/memory_server.py'],
     pathex=[],
     binaries=[],
     datas=[],

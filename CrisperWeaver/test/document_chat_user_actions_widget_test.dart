@@ -429,6 +429,7 @@ void main() {
 
       // Clic sur Tout Vider
       final deleteSweepBtn = find.byIcon(Icons.delete_sweep);
+      await tester.ensureVisible(deleteSweepBtn);
       await tester.tap(deleteSweepBtn);
       // Drainer les frames sans pumpAndSettle (évite timeout causé par timers HTTP ouverts)
       for (var i = 0; i < 5; i++) {

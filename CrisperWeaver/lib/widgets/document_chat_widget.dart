@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:just_audio/just_audio.dart';
 import '../constants/timeout_policy.dart';
 import 'package:path/path.dart' as p;
 import 'package:syncfusion_flutter_pdf/pdf.dart';
@@ -41,9 +42,13 @@ import 'file_paths_dialog.dart';
 import 'mcp_library_dialog.dart';
 import 'web_media_import_dialog.dart';
 import '../services/audiobook_service.dart';
+import '../models/audiobook_models.dart';
 import '../models/conversation_capsule.dart';
 import '../services/conversation_compactor_service.dart';
 import 'context_capsule_dialog.dart';
+import 'voice_dictation_button.dart';
+import 'assistant_voice_settings_dialog.dart';
+import '../services/assistant_voice_service.dart';
 
 class DocumentChatWidget extends ConsumerStatefulWidget {
   final bool isFullscreen;
@@ -177,6 +182,16 @@ class _DocumentChatWidgetState extends ConsumerState<DocumentChatWidget>
 
   final FocusNode _focusNode = FocusNode();
 
+  // ── Lecture audio TTS des réponses (Voice I/O R1 / R1E) ───────────────────
+  final AudioPlayer _voiceIoAudioPlayer = AudioPlayer();
+  StreamSubscription<PlayerState>? _voiceIoPlayerSub;
+  int _voiceIoGenerationId = 0;
+  String? _voiceIoReadingMessageId;
+  bool _voiceIoIsSynthesizing = false;
+  bool _voiceIoIsPlaying = false;
+  bool _isVoiceDictationBusy = false;
+  String? _voiceIoCurrentAudioFilePath;
+
   @override
   void initState() {
     super.initState();
@@ -187,16 +202,37 @@ class _DocumentChatWidgetState extends ConsumerState<DocumentChatWidget>
     _loadMcpCustomContext();
     _loadImageModels();
     _loadCompactionState();
+    _voiceIoPlayerSub = _voiceIoAudioPlayer.playerStateStream.listen((playerState) {
+      if (playerState.processingState == ProcessingState.completed) {
+        _voiceIoStopAndCleanup();
+      }
+      if (mounted) {
+        final isReallyPlaying = playerState.playing &&
+            playerState.processingState != ProcessingState.completed &&
+            playerState.processingState != ProcessingState.idle;
+        setState(() {
+          _voiceIoIsPlaying = isReallyPlaying;
+          if (!isReallyPlaying && !_voiceIoIsSynthesizing) {
+            _voiceIoReadingMessageId = null;
+          }
+        });
+      }
+    });
   }
 
   @override
   void dispose() {
+    _voiceIoGenerationId++;
+    _voiceIoPlayerSub?.cancel();
     _streamSub?.cancel();
     _inputController.dispose();
     _scrollController.dispose();
     _chipsScrollController.dispose();
     _docFindCtrl.dispose();
     _focusNode.dispose();
+    _voiceIoAudioPlayer.stop().catchError((_) {});
+    _voiceIoAudioPlayer.dispose();
+    _voiceIoCleanupTempFile();
     super.dispose();
   }
 
@@ -1310,6 +1346,15 @@ if ($img -ne $null) {
     bool forceImageMode = false,
     bool allowLlmTranslation = true,
   ]) async {
+    if (_isVoiceDictationBusy) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Veuillez terminer la dictée vocale avant d\'envoyer le message.'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
     final text = overrideText ?? _inputController.text.trim();
     if (text.isEmpty || _isStreaming) return;
 
@@ -1875,6 +1920,14 @@ Ne dis JAMAIS que tu n'as pas accès à Internet ou que tu ne peux pas faire de 
               // ── Auto-compactage progressif du contexte (R4-CMP) ──
               if (_isCompactContextEnabled && _compactContextAutoMode) {
                 unawaited(_checkAndAutoCompact());
+              }
+
+              // ── Auto-TTS Response (AUA-004 / DOC-VOICE-R1B) ──
+              final autoTts = ref.read(settingsServiceProvider).autoTtsResponseEnabled;
+              final replyText = buffer.toString();
+              if (autoTts && replyText.trim().isNotEmpty) {
+                final messageId = 'doc_${replyText.hashCode}_${replyText.length}';
+                unawaited(_voiceIoReadAloud(messageId, replyText));
               }
             } else {
               setState(() {
@@ -3829,7 +3882,23 @@ Ne dis JAMAIS que tu n'as pas accès à Internet ou que tu ne peux pas faire de 
                   onSubmitted: (_) => _sendMessage(),
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 4),
+              AutoTtsToggleButton(
+                isAudioPlaying: _voiceIoIsPlaying,
+                isSynthesizing: _voiceIoIsSynthesizing,
+                onStopRequested: _stopReadingAloudDocument,
+              ),
+              const SizedBox(width: 2),
+              VoiceDictationButton(
+                controller: _inputController,
+                enabled: !_isStreaming,
+                onRecordingStarted: _stopReadingAloudDocument,
+                onBusyChanged: (busy) {
+                  if (busy) _stopReadingAloudDocument();
+                  if (mounted) setState(() => _isVoiceDictationBusy = busy);
+                },
+              ),
+              const SizedBox(width: 4),
               if (_isStreaming)
                 FilledButton.icon(
                   style: FilledButton.styleFrom(
@@ -3849,7 +3918,7 @@ Ne dis JAMAIS que tu n'as pas accès à Internet ou que tu ne peux pas faire de 
                     foregroundColor: Colors.white,
                   ),
                   icon: const Icon(Icons.send, size: 18),
-                  onPressed: _sendMessage,
+                  onPressed: _isVoiceDictationBusy ? null : _sendMessage,
                 ),
             ],
           ),
@@ -3871,7 +3940,7 @@ Ne dis JAMAIS que tu n'as pas accès à Internet ou que tu ne peux pas faire de 
   // ── Popover Contexte (📝) ─────────────────────────────────────────────────
 
   Future<void> _showContextMenu(BuildContext context) async {
-    await showDialog(
+    await showDialog<void>(
       context: context,
       barrierColor: Colors.black38,
       builder: (_) => Dialog(
@@ -4054,6 +4123,236 @@ Ne dis JAMAIS que tu n'as pas accès à Internet ou que tu ne peux pas faire de 
     );
   }
 
+  void _voiceIoCleanupTempFile() {
+    if (_voiceIoCurrentAudioFilePath != null) {
+      try {
+        final f = File(_voiceIoCurrentAudioFilePath!);
+        if (f.existsSync()) f.deleteSync();
+      } catch (_) {}
+      _voiceIoCurrentAudioFilePath = null;
+    }
+    _voiceIoCleanupTempWavFile();
+  }
+
+  void _voiceIoCleanupTempWavFile() {
+    try {
+      final wavFile = File(p.join(
+        AppPaths.tmpDir.path,
+        'document_assistant_read_aloud.wav',
+      ));
+      if (wavFile.existsSync()) wavFile.deleteSync();
+    } catch (_) {
+      Future<void>.delayed(const Duration(milliseconds: 150), () {
+        try {
+          final wavFile = File(p.join(
+            AppPaths.tmpDir.path,
+            'document_assistant_read_aloud.wav',
+          ));
+          if (wavFile.existsSync()) wavFile.deleteSync();
+        } catch (_) {}
+      });
+    }
+  }
+
+  Future<void> _voiceIoStopAndCleanup() async {
+    _voiceIoGenerationId++;
+    try {
+      await _voiceIoAudioPlayer.stop();
+    } catch (_) {}
+    _voiceIoCleanupTempFile();
+  }
+
+  void _stopReadingAloudDocument() {
+    unawaited(_voiceIoStopAndCleanup());
+    if (mounted) {
+      setState(() {
+        _voiceIoIsSynthesizing = false;
+        _voiceIoIsPlaying = false;
+        _voiceIoReadingMessageId = null;
+      });
+    }
+  }
+
+  Future<void> _voiceIoReadAloud(String messageId, String rawText) async {
+    if (_voiceIoIsSynthesizing) return;
+    if (_voiceIoIsPlaying && _voiceIoReadingMessageId == messageId) {
+      await _voiceIoStopAndCleanup();
+      if (mounted) {
+        setState(() {
+          _voiceIoIsPlaying = false;
+          _voiceIoReadingMessageId = null;
+        });
+      }
+      return;
+    }
+
+    if (_voiceIoIsPlaying) {
+      await _voiceIoStopAndCleanup();
+    }
+
+    final cleanText = AudiobookService.stripStyleTags(rawText);
+    if (cleanText.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Le message ne contient aucun texte à lire.')),
+        );
+      }
+      return;
+    }
+
+    final settings = ref.read(settingsServiceProvider);
+
+    // Fallback narrateur legacy si explicitement configuré
+    if (settings.voiceIoEngine == 'legacy_narrator') {
+      setState(() {
+        _voiceIoReadingMessageId = messageId;
+        _voiceIoIsSynthesizing = true;
+      });
+
+      try {
+        final savedConfig = settings.getSpeakerVoiceConfig('narrator');
+        AudiobookSpeaker narratorSpeaker;
+        if (savedConfig.isNotEmpty) {
+          narratorSpeaker = AudiobookSpeaker.fromJson(savedConfig);
+          if (settings.defaultNarratorVoice.isNotEmpty &&
+              narratorSpeaker.voiceModelName != settings.defaultNarratorVoice) {
+            narratorSpeaker = narratorSpeaker.copyWith(
+              voiceModelName: settings.defaultNarratorVoice,
+            );
+          }
+        } else {
+          narratorSpeaker = AudiobookSpeaker(
+            id: 'narrator',
+            name: 'Narrateur',
+            voiceModelName: settings.defaultNarratorVoice,
+          );
+        }
+
+        final line = AudiobookLine(
+          id: 'doc_msg_${DateTime.now().millisecondsSinceEpoch}',
+          speakerId: 'narrator',
+          speakerName: 'Narrateur',
+          text: cleanText,
+        );
+        final currentGen = ++_voiceIoGenerationId;
+        final svc = ref.read(audiobookServiceProvider);
+        final wavBytes = await svc.synthesizeLinesToMemory(
+          lines: [line],
+          speakers: {'narrator': narratorSpeaker},
+        );
+
+        if (!mounted || currentGen != _voiceIoGenerationId) {
+          _voiceIoCleanupTempWavFile();
+          return;
+        }
+
+        final previewFile = File(p.join(
+          AppPaths.tmpDir.path,
+          'document_assistant_read_aloud.wav',
+        ));
+        await previewFile.writeAsBytes(wavBytes);
+
+        if (!mounted || currentGen != _voiceIoGenerationId) {
+          _voiceIoCleanupTempWavFile();
+          return;
+        }
+        setState(() => _voiceIoIsSynthesizing = false);
+        await _voiceIoAudioPlayer.setFilePath(previewFile.path);
+        await _voiceIoAudioPlayer.play();
+      } catch (e) {
+        _voiceIoCleanupTempWavFile();
+        if (mounted) {
+          setState(() {
+            _voiceIoIsSynthesizing = false;
+            _voiceIoReadingMessageId = null;
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Erreur de synthèse vocale : $e'),
+              backgroundColor: Colors.red.shade800,
+            ),
+          );
+        }
+      }
+      return;
+    }
+
+    // Moteur Assistant Microsoft (OneCore offline + Edge neural online)
+    if (settings.voiceIoMode != 'offline_only' && settings.voiceIoOnlineConsent == null) {
+      if (!mounted) return;
+      await AssistantVoiceSettingsDialog.ensureOnlineConsent(context, settings);
+    }
+
+    setState(() {
+      _voiceIoReadingMessageId = messageId;
+      _voiceIoIsSynthesizing = true;
+    });
+
+    final currentGen = ++_voiceIoGenerationId;
+
+    try {
+      final voiceSvc = ref.read(assistantVoiceServiceProvider);
+      final res = await voiceSvc.synthesize(
+        text: cleanText,
+        mode: settings.voiceIoMode,
+        onlineVoiceId: settings.voiceIoOnlineVoice,
+        offlineVoiceId: settings.voiceIoOfflineVoice,
+        allowOnline: settings.voiceIoOnlineConsent == true,
+      );
+
+      if (!mounted || currentGen != _voiceIoGenerationId) {
+        if (res.filePath != null) {
+          try {
+            File(res.filePath!).deleteSync();
+          } catch (_) {}
+        }
+        return;
+      }
+
+      setState(() => _voiceIoIsSynthesizing = false);
+
+      if (!res.isSuccess || res.filePath == null) {
+        if (mounted) {
+          setState(() => _voiceIoReadingMessageId = null);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(res.errorMessage ?? 'Erreur lors de la synthèse vocale.'),
+              backgroundColor: Colors.red.shade800,
+            ),
+          );
+        }
+        return;
+      }
+
+      if (res.usedOfflineFallback && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Voix en ligne inaccessible : repli automatique sur la voix locale.'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+
+      _voiceIoCurrentAudioFilePath = res.filePath;
+      await _voiceIoAudioPlayer.setFilePath(res.filePath!);
+      await _voiceIoAudioPlayer.play();
+    } catch (e) {
+      _voiceIoCleanupTempFile();
+      if (mounted) {
+        setState(() {
+          _voiceIoIsSynthesizing = false;
+          _voiceIoReadingMessageId = null;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Erreur de synthèse vocale : $e'),
+            backgroundColor: Colors.red.shade800,
+          ),
+        );
+      }
+    }
+  }
+
   Widget _buildAssistantMessage(String text, {bool isStreaming = false, String? actionPrompt}) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final settings = ref.read(settingsServiceProvider);
@@ -4086,6 +4385,33 @@ Ne dis JAMAIS que tu n'as pas accès à Internet ou que tu ne peux pas faire de 
                   'Assistant IA',
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.blueAccent),
                 ),
+                if (!isStreaming && text.trim().isNotEmpty) ...[
+                  const SizedBox(width: 8),
+                  Builder(
+                    builder: (context) {
+                      final messageId = 'doc_${text.hashCode}_${text.length}';
+                      final active = _voiceIoReadingMessageId == messageId;
+                      return InkWell(
+                        onTap: () => _voiceIoReadAloud(messageId, text),
+                        child: _voiceIoIsSynthesizing && active
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : Icon(
+                                _voiceIoIsPlaying && active
+                                    ? Icons.stop_rounded
+                                    : Icons.volume_up_rounded,
+                                size: 15,
+                                color: _voiceIoIsPlaying && active
+                                    ? Theme.of(context).colorScheme.primary
+                                    : Colors.grey,
+                              ),
+                      );
+                    },
+                  ),
+                ],
                 if (isStreaming) ...[
                   const SizedBox(width: 8),
                   const SizedBox(
@@ -4165,6 +4491,7 @@ Ne dis JAMAIS que tu n'as pas accès à Internet ou que tu ne peux pas faire de 
                 }
               },
               // Images locales (file://) → cliquables pour sauvegarde
+              // ignore: deprecated_member_use
               imageBuilder: (uri, title, alt) {
                 if (uri.scheme == 'file') {
                   final filePath = uri.toFilePath(windows: true);

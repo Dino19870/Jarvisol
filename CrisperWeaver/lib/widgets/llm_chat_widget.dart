@@ -15,6 +15,9 @@ import '../utils/app_paths.dart';
 import '../utils/platform_utils.dart' as plat;
 import 'ai_knowledge_dialog.dart';
 import 'llm_settings_dialog.dart';
+import 'voice_dictation_button.dart';
+import 'assistant_voice_settings_dialog.dart';
+import '../services/assistant_voice_service.dart';
 import '../utils/ai_text_disclosure.dart';
 
 class LlmChatWidget extends ConsumerStatefulWidget {
@@ -53,14 +56,28 @@ class _LlmChatWidgetState extends ConsumerState<LlmChatWidget>
   final GlobalKey        _findKey  = GlobalKey();
   final TextEditingController _findCtrl = TextEditingController();
 
-  // ── Lecture audio TTS (AUA-004) ─────────────────────────────────────────────
+  // ── Lecture audio TTS (AUA-004 / VOICE I/O R1E) ───────────────────────────
   final AudioPlayer _audioPlayer = AudioPlayer();
   String? _readingMessageId;
   bool _isSynthesizing = false;
+  bool _isVoiceDictationBusy = false;
   bool _isPlayingAudio = false;
+  int _readAloudGen = 0;
+  String? _currentAudioFilePath;
 
   @override
   bool get wantKeepAlive => true;
+
+  void _cleanupTempAudioFile() {
+    if (_currentAudioFilePath != null) {
+      try {
+        final f = File(_currentAudioFilePath!);
+        if (f.existsSync()) f.deleteSync();
+      } catch (_) {}
+      _currentAudioFilePath = null;
+    }
+    _cleanupTempWavFile();
+  }
 
   void _cleanupTempWavFile() {
     try {
@@ -81,10 +98,22 @@ class _LlmChatWidgetState extends ConsumerState<LlmChatWidget>
   }
 
   Future<void> _stopAndCleanup() async {
+    _readAloudGen++;
     try {
       await _audioPlayer.stop();
     } catch (_) {}
-    _cleanupTempWavFile();
+    _cleanupTempAudioFile();
+  }
+
+  void _stopReadingAloud() {
+    unawaited(_stopAndCleanup());
+    if (mounted) {
+      setState(() {
+        _isSynthesizing = false;
+        _isPlayingAudio = false;
+        _readingMessageId = null;
+      });
+    }
   }
 
   @override
@@ -155,6 +184,15 @@ class _LlmChatWidgetState extends ConsumerState<LlmChatWidget>
   }
 
   Future<void> _sendPrompt(String userText) async {
+    if (_isVoiceDictationBusy) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Veuillez terminer la dictée vocale avant d\'envoyer le message.'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
     if (userText.trim().isEmpty || _isStreaming) return;
     final text = userText.trim();
     _inputController.clear();
@@ -195,15 +233,25 @@ Réponds de manière concise, précise, claire et parfaitement structurée en fr
       },
       onDone: () {
         if (mounted) {
+          final replyText = buffer.toString();
+          final assistantMsg = LlmChatMessage(
+            role: 'assistant',
+            content: replyText,
+          );
           setState(() {
-            _messages.add(LlmChatMessage(
-              role: 'assistant',
-              content: buffer.toString(),
-            ));
+            _messages.add(assistantMsg);
             _currentStreamingText = '';
             _isStreaming = false;
           });
           _scrollToBottom();
+
+          // Auto-TTS Response (AUA-004 / DOC-VOICE-R1B)
+          final autoTts = ref.read(settingsServiceProvider).autoTtsResponseEnabled;
+          if (autoTts && replyText.trim().isNotEmpty) {
+            final msgId =
+                '${assistantMsg.timestamp.millisecondsSinceEpoch}_${assistantMsg.content.hashCode}';
+            unawaited(_readAloud(msgId, replyText));
+          }
         }
       },
       onError: (Object e) {
@@ -684,7 +732,23 @@ Réponds de manière concise, précise, claire et parfaitement structurée en fr
                   onSubmitted: (val) => _sendPrompt(val),
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 4),
+              AutoTtsToggleButton(
+                isAudioPlaying: _isPlayingAudio,
+                isSynthesizing: _isSynthesizing,
+                onStopRequested: _stopReadingAloud,
+              ),
+              const SizedBox(width: 2),
+              VoiceDictationButton(
+                controller: _inputController,
+                enabled: !_isStreaming,
+                onRecordingStarted: _stopReadingAloud,
+                onBusyChanged: (busy) {
+                  if (busy) _stopReadingAloud();
+                  if (mounted) setState(() => _isVoiceDictationBusy = busy);
+                },
+              ),
+              const SizedBox(width: 4),
               if (_isStreaming)
                 IconButton.filled(
                   icon: const Icon(Icons.stop),
@@ -707,7 +771,9 @@ Réponds de manière concise, précise, claire et parfaitement structurée en fr
               else
                 IconButton.filled(
                   icon: const Icon(Icons.send_rounded),
-                  onPressed: () => _sendPrompt(_inputController.text),
+                  onPressed: _isVoiceDictationBusy
+                      ? null
+                      : () => _sendPrompt(_inputController.text),
                 ),
             ],
           ),
@@ -777,7 +843,7 @@ Réponds de manière concise, précise, claire et parfaitement structurée en fr
     );
   }
 
-  // ── Lecture audio TTS (AUA-004) ─────────────────────────────────────────────
+  // ── Lecture audio TTS (AUA-004 / VOICE I/O R1E) ───────────────────────────
   Future<void> _readAloud(String messageId, String rawText) async {
     if (_isSynthesizing) return;
     if (_isPlayingAudio && _readingMessageId == messageId) {
@@ -805,56 +871,138 @@ Réponds de manière concise, précise, claire et parfaitement structurée en fr
       return;
     }
 
+    final settings = ref.read(settingsServiceProvider);
+
+    // Fallback narrateur legacy si explicitement configuré
+    if (settings.voiceIoEngine == 'legacy_narrator') {
+      setState(() {
+        _readingMessageId = messageId;
+        _isSynthesizing = true;
+      });
+
+      try {
+        final savedConfig = settings.getSpeakerVoiceConfig('narrator');
+        AudiobookSpeaker narratorSpeaker;
+        if (savedConfig.isNotEmpty) {
+          narratorSpeaker = AudiobookSpeaker.fromJson(savedConfig);
+          if (settings.defaultNarratorVoice.isNotEmpty &&
+              narratorSpeaker.voiceModelName != settings.defaultNarratorVoice) {
+            narratorSpeaker =
+                narratorSpeaker.copyWith(voiceModelName: settings.defaultNarratorVoice);
+          }
+        } else {
+          narratorSpeaker = AudiobookSpeaker(
+            id: 'narrator',
+            name: 'Narrateur',
+            voiceModelName: settings.defaultNarratorVoice,
+          );
+        }
+
+        final dummyLine = AudiobookLine(
+          id: 'msg_${messageId}_${DateTime.now().millisecondsSinceEpoch}',
+          speakerId: 'narrator',
+          speakerName: 'Narrateur',
+          text: cleanText,
+        );
+
+        final svc = ref.read(audiobookServiceProvider);
+        final wavBytes = await svc.synthesizeLinesToMemory(
+          lines: [dummyLine],
+          speakers: {'narrator': narratorSpeaker},
+        );
+
+        final tempDir = AppPaths.tmpDir;
+        final previewFile = File(p.join(tempDir.path, 'assistant_read_aloud.wav'));
+        await previewFile.writeAsBytes(wavBytes);
+
+        if (!mounted) return;
+        setState(() {
+          _isSynthesizing = false;
+        });
+
+        await _audioPlayer.setFilePath(previewFile.path);
+        await _audioPlayer.play();
+      } catch (e) {
+        _cleanupTempWavFile();
+        if (mounted) {
+          setState(() {
+            _isSynthesizing = false;
+            _readingMessageId = null;
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Erreur de synthèse vocale : $e'),
+              backgroundColor: Colors.red.shade800,
+            ),
+          );
+        }
+      }
+      return;
+    }
+
+    // Moteur Assistant Microsoft (OneCore offline + Edge neural online)
+    if (settings.voiceIoMode != 'offline_only' && settings.voiceIoOnlineConsent == null) {
+      if (!mounted) return;
+      await AssistantVoiceSettingsDialog.ensureOnlineConsent(context, settings);
+    }
+
     setState(() {
       _readingMessageId = messageId;
       _isSynthesizing = true;
     });
 
+    final currentGen = ++_readAloudGen;
+
     try {
-      final settings = ref.read(settingsServiceProvider);
-      final savedConfig = settings.getSpeakerVoiceConfig('narrator');
-      AudiobookSpeaker narratorSpeaker;
-      if (savedConfig.isNotEmpty) {
-        narratorSpeaker = AudiobookSpeaker.fromJson(savedConfig);
-        if (settings.defaultNarratorVoice.isNotEmpty &&
-            narratorSpeaker.voiceModelName != settings.defaultNarratorVoice) {
-          narratorSpeaker =
-              narratorSpeaker.copyWith(voiceModelName: settings.defaultNarratorVoice);
+      final voiceSvc = ref.read(assistantVoiceServiceProvider);
+      final res = await voiceSvc.synthesize(
+        text: cleanText,
+        mode: settings.voiceIoMode,
+        onlineVoiceId: settings.voiceIoOnlineVoice,
+        offlineVoiceId: settings.voiceIoOfflineVoice,
+        allowOnline: settings.voiceIoOnlineConsent == true,
+      );
+
+      if (!mounted || currentGen != _readAloudGen) {
+        if (res.filePath != null) {
+          try {
+            File(res.filePath!).deleteSync();
+          } catch (_) {}
         }
-      } else {
-        narratorSpeaker = AudiobookSpeaker(
-          id: 'narrator',
-          name: 'Narrateur',
-          voiceModelName: settings.defaultNarratorVoice,
-        );
+        return;
       }
 
-      final dummyLine = AudiobookLine(
-        id: 'msg_${messageId}_${DateTime.now().millisecondsSinceEpoch}',
-        speakerId: 'narrator',
-        speakerName: 'Narrateur',
-        text: cleanText,
-      );
-
-      final svc = ref.read(audiobookServiceProvider);
-      final wavBytes = await svc.synthesizeLinesToMemory(
-        lines: [dummyLine],
-        speakers: {'narrator': narratorSpeaker},
-      );
-
-      final tempDir = AppPaths.tmpDir;
-      final previewFile = File(p.join(tempDir.path, 'assistant_read_aloud.wav'));
-      await previewFile.writeAsBytes(wavBytes);
-
-      if (!mounted) return;
       setState(() {
         _isSynthesizing = false;
       });
 
-      await _audioPlayer.setFilePath(previewFile.path);
+      if (!res.isSuccess || res.filePath == null) {
+        if (mounted) {
+          setState(() => _readingMessageId = null);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(res.errorMessage ?? 'Erreur lors de la synthèse vocale.'),
+              backgroundColor: Colors.red.shade800,
+            ),
+          );
+        }
+        return;
+      }
+
+      if (res.usedOfflineFallback && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Voix en ligne inaccessible : repli automatique sur la voix locale.'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+
+      _currentAudioFilePath = res.filePath;
+      await _audioPlayer.setFilePath(res.filePath!);
       await _audioPlayer.play();
     } catch (e) {
-      _cleanupTempWavFile();
+      _cleanupTempAudioFile();
       if (mounted) {
         setState(() {
           _isSynthesizing = false;
@@ -1035,9 +1183,13 @@ Réponds de manière concise, précise, claire et parfaitement structurée en fr
     if (q.contains('*') || q.contains('?')) {
       final buf = StringBuffer();
       for (final c in q.split('')) {
-        if (c == '*') buf.write('.*');
-        else if (c == '?') buf.write('.');
-        else buf.write(RegExp.escape(c));
+        if (c == '*') {
+          buf.write('.*');
+        } else if (c == '?') {
+          buf.write('.');
+        } else {
+          buf.write(RegExp.escape(c));
+        }
       }
       return RegExp(buf.toString(), caseSensitive: false);
     }
